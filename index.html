@@ -1,0 +1,1313 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<!-- viewport-fit=cover → Safe Area(노치/홈바) 영역까지 확장 -->
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<!-- iOS Safari PWA 메타 -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="mobile-web-app-capable" content="yes">
+<title>거래처·회계 관리 시스템</title>
+<style>
+/* ── Reset ─────────────────────────────────────────────────────────────── */
+*{box-sizing:border-box;margin:0;padding:0;}
+
+/* iOS Safari: 100vh = 주소창 포함 높이 버그 → dvh 폴백 */
+html{height:100%;height:-webkit-fill-available;}
+body{
+  font-family:'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif;
+  background:#f1f5f9;color:#0f172a;
+  min-height:100vh;min-height:100dvh;
+  min-height:-webkit-fill-available;
+  /* iOS 고무줄 스크롤 제거 */
+  overscroll-behavior:none;
+  -webkit-text-size-adjust:100%;
+}
+
+/* 모든 인터랙티브 요소: tap 딜레이 제거 + 하이라이트 제거 */
+button,a,[role="button"]{
+  touch-action:manipulation;
+  -webkit-tap-highlight-color:transparent;
+  -webkit-touch-callout:none;
+  cursor:pointer;
+}
+button,input,select,textarea{font-family:inherit;}
+
+/* iOS Safari: input 포커스 시 자동 확대 방지 (font-size ≥ 16px) */
+input,select,textarea{font-size:16px!important;}
+/* 작은 라벨 등 나머지는 그대로 유지 */
+input::placeholder{font-size:14px;}
+
+::-webkit-scrollbar{width:5px;}
+::-webkit-scrollbar-track{background:#f1f5f9;}
+::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px;}
+
+/* ── Layout ────────────────────────────────────────────────────────────── */
+#app{display:flex;min-height:100vh;min-height:100dvh;}
+.main-col{flex:1;display:flex;flex-direction:column;min-width:0;}
+.sidebar{
+  width:200px;flex-shrink:0;background:#fff;
+  border-right:1px solid #e2e8f0;display:flex;flex-direction:column;
+  /* iOS: 사이드바 내 스크롤 */
+  -webkit-overflow-scrolling:touch;
+}
+.mobile-header{
+  display:none;align-items:center;justify-content:space-between;
+  padding:0 16px;
+  /* Safe Area 상단 여백 (노치) */
+  padding-top:env(safe-area-inset-top,0px);
+  height:calc(52px + env(safe-area-inset-top,0px));
+  background:#fff;border-bottom:1px solid #e2e8f0;
+  position:sticky;top:0;z-index:30;
+}
+/* 하단 고정 래퍼: Safe Area 홈바 여백 자동 처리 */
+.bottom-wrap{
+  display:none;
+  position:fixed;
+  bottom:0;left:0;right:0;
+  z-index:30;
+  background:#fff;
+  /* Safe Area 하단 여백 */
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+.bottom-nav{height:52px;background:#fff;padding:0 8px;display:none;}
+
+/* iOS Safari: position:fixed 오버레이 → inset 대신 longhand */
+.sidebar-overlay{
+  display:none;
+  position:fixed;top:0;right:0;bottom:0;left:0;
+  z-index:40;background:rgba(15,23,42,.35);
+}
+.sidebar-drawer{
+  position:fixed;top:0;left:0;bottom:0;
+  width:220px;background:#fff;
+  border-right:1px solid #e2e8f0;
+  z-index:41;
+  transform:translateX(-100%);
+  transition:transform .22s ease;
+  display:flex;flex-direction:column;
+  /* iOS: 드로어 내부 스크롤 */
+  -webkit-overflow-scrolling:touch;
+  overflow-y:auto;
+}
+.sidebar-drawer.open{transform:translateX(0);}
+.nav-btn:hover{background:#f1f5f9!important;}
+.hover-row:hover{background:#f8fafc!important;}
+
+/* 스크롤 가능한 main 영역 */
+main{
+  -webkit-overflow-scrolling:touch;
+  overflow-y:auto;
+}
+
+/* ── Responsive Grids ──────────────────────────────────────────────────── */
+.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;}
+.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.dash-layout{display:grid;grid-template-columns:1fr 340px;gap:12px;}
+.dash-right{display:flex;flex-direction:column;gap:12px;}
+.dash-right-inner{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+
+/* ── Table columns ─────────────────────────────────────────────────────── */
+.th,.td{display:flex;align-items:center;}
+.col-date{width:90px;flex-shrink:0;}
+.col-type{width:36px;flex-shrink:0;justify-content:center;}
+.col-amt{width:110px;flex-shrink:0;justify-content:flex-end;}
+.col-tax{width:86px;flex-shrink:0;justify-content:flex-end;}
+.col-status{width:78px;flex-shrink:0;justify-content:center;}
+.col-actions{width:50px;flex-shrink:0;justify-content:center;gap:10px;}
+
+/* ── Tablet ────────────────────────────────────────────────────────────── */
+@media(max-width:1023px){
+  .g4{grid-template-columns:repeat(2,1fr);}
+  .dash-layout{grid-template-columns:1fr;}
+  .dash-right{display:grid;grid-template-columns:1fr 1fr;}
+  .dash-right-inner{grid-template-columns:repeat(4,1fr);}
+}
+
+/* ── Mobile ────────────────────────────────────────────────────────────── */
+@media(max-width:639px){
+  .sidebar{display:none!important;}
+  .mobile-header{display:flex;}
+  .bottom-wrap{display:block;}
+  .bottom-nav{display:flex;}
+  /* 하단 탭바 + Safe Area 높이만큼 본문 여백 */
+  .main-col>main{padding-bottom:calc(76px + env(safe-area-inset-bottom,0px));}
+  .g4{grid-template-columns:1fr 1fr;gap:8px;}
+  .g3{grid-template-columns:1fr;}
+  .g2{grid-template-columns:1fr;}
+  .dash-layout{grid-template-columns:1fr;}
+  .dash-right{display:flex;flex-direction:column;}
+  .dash-right-inner{grid-template-columns:1fr 1fr;}
+  .hide-sm{display:none!important;}
+  .stat-val{font-size:17px!important;}
+  .col-date,.col-tax{display:none!important;}
+  .col-amt{width:90px;}
+  .col-status{width:68px;}
+  .pad-main{padding:14px 12px!important;}
+  .page-title{font-size:16px!important;}
+}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="modal-root"></div>
+
+<script>
+// ── Sample Data ───────────────────────────────────────────────────────────────
+const SAMPLE_CLIENTS=[
+  {id:1,name:"삼성전자",  bizNo:"124-81-00998",rep:"이재용",phone:"02-2255-0114",email:"contact@samsung.com", address:"서울 강남구 삼성로 129",     type:"매출처",memo:"주요 고객사"},
+  {id:2,name:"LG전자",    bizNo:"107-86-14075",rep:"조주완",phone:"02-3777-1114",email:"contact@lg.com",      address:"서울 영등포구 여의대로 128",  type:"매출처",memo:""},
+  {id:3,name:"현대자동차",bizNo:"119-81-02477",rep:"장재훈",phone:"02-3464-1114",email:"contact@hyundai.com", address:"서울 서초구 헌릉로 12",       type:"매입처",memo:"부품 공급업체"},
+  {id:4,name:"SK하이닉스",bizNo:"000-00-11000",rep:"곽노정",phone:"031-8061-4114",email:"contact@skhynix.com",address:"경기도 이천시 부발읍",        type:"매출처",memo:""},
+  {id:5,name:"롯데케미칼",bizNo:"000-00-11001",rep:"황진구",phone:"02-3479-1114",email:"contact@lottechem.com",address:"서울 중구 을지로 30",        type:"매입처",memo:"원자재 공급"},
+];
+const SAMPLE_TX=[
+  {id:1, date:"2026-05-20",clientId:1,type:"매출",amount:5500000,tax:550000,memo:"전자부품 납품",     status:"미수금"},
+  {id:2, date:"2026-05-18",clientId:2,type:"매출",amount:3200000,tax:320000,memo:"소프트웨어 라이선스",status:"수금완료"},
+  {id:3, date:"2026-05-15",clientId:3,type:"매입",amount:2100000,tax:210000,memo:"원자재 구매",       status:"지급완료"},
+  {id:4, date:"2026-05-12",clientId:4,type:"매출",amount:8800000,tax:880000,memo:"반도체 납품",       status:"수금완료"},
+  {id:5, date:"2026-05-10",clientId:5,type:"매입",amount:1500000,tax:150000,memo:"화학원료 구매",     status:"미지급금"},
+  {id:6, date:"2026-05-08",clientId:1,type:"매출",amount:4200000,tax:420000,memo:"유지보수 서비스",   status:"수금완료"},
+  {id:7, date:"2026-05-05",clientId:3,type:"매입",amount:3700000,tax:370000,memo:"설비 부품",         status:"미지급금"},
+  {id:8, date:"2026-04-28",clientId:2,type:"매출",amount:2600000,tax:260000,memo:"컨설팅 서비스",     status:"미수금"},
+  {id:9, date:"2026-04-20",clientId:4,type:"매출",amount:6100000,tax:610000,memo:"메모리 칩 납품",   status:"수금완료"},
+  {id:10,date:"2026-04-15",clientId:5,type:"매입",amount:900000, tax:90000, memo:"소모품 구매",       status:"지급완료"},
+];
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+const fmt   = n=>new Intl.NumberFormat('ko-KR').format(n||0);
+const fmtW  = n=>`₩${fmt(n)}`;
+// UTC 기준 버그 수정 → 로컬(KST) 날짜 사용
+const localDate = d => {
+  const t = d || new Date();
+  return `${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,'0')}-${String(t.getDate()).padStart(2,'0')}`;
+};
+const today = () => localDate();
+const thisMonth = () => localDate().slice(0,7);
+const nextId= a=>a.length===0?1:Math.max(...a.map(x=>x.id||0))+1;
+const esc   = s=>String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+
+// ── 초성 검색 ─────────────────────────────────────────────────────────────────
+const CHO=['ㄱ','ㄲ','ㄴ','ㄷ','ㄸ','ㄹ','ㅁ','ㅂ','ㅃ','ㅅ','ㅆ','ㅇ','ㅈ','ㅉ','ㅊ','ㅋ','ㅌ','ㅍ','ㅎ'];
+const getCs=s=>[...String(s??'')].map(c=>{const n=c.charCodeAt(0);return(n>=0xAC00&&n<=0xD7A3)?CHO[Math.floor((n-0xAC00)/588)]:c;}).join('');
+const matchStr=(text,q)=>{if(!q)return true;const t=String(text??'').toLowerCase(),lq=q.toLowerCase();if(t.includes(lq))return true;if([...lq].every(c=>CHO.includes(c)))return getCs(t).includes(lq);return false;};
+const matchAny=(q,...fields)=>!q||fields.some(f=>matchStr(f,q));
+
+// ── Icons ─────────────────────────────────────────────────────────────────────
+const I={
+  grid:    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:18px;height:18px;display:block"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>`,
+  users:   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:18px;height:18px;display:block"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87M16 3.13a4 4 0 0 1 0 7.75"/></svg>`,
+  activity:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:18px;height:18px;display:block"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>`,
+  card:    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" style="width:18px;height:18px;display:block"><rect x="2" y="5" width="20" height="14" rx="2"/><line x1="2" y1="10" x2="22" y2="10"/></svg>`,
+  plus:    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="width:15px;height:15px;display:block"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>`,
+  edit:    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;display:block"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`,
+  trash:   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;display:block"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6M14 11v6M9 6V4h6v2"/></svg>`,
+  x:       `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="width:18px;height:18px;display:block"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>`,
+  check:   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="width:13px;height:13px;display:block"><polyline points="20 6 9 17 4 12"/></svg>`,
+  search:  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;display:block"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>`,
+  chevD:   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;display:block"><polyline points="6 9 12 15 18 9"/></svg>`,
+  chevR:   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;display:block"><polyline points="9 18 15 12 9 6"/></svg>`,
+  menu:    `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:22px;height:22px;display:block"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>`,
+  download:`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;display:block"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>`,
+  upload:  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;display:block"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>`,
+  camera:  `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:16px;height:16px;display:block"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>`,
+  spark:   `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="width:14px;height:14px;display:block"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>`,
+};
+
+// ── Status ────────────────────────────────────────────────────────────────────
+const STATUS_CFG={수금완료:{bg:'#dcfce7',bd:'#86efac',tx:'#16a34a'},지급완료:{bg:'#dbeafe',bd:'#93c5fd',tx:'#1d4ed8'},미수금:{bg:'#fef3c7',bd:'#fcd34d',tx:'#b45309'},미지급금:{bg:'#fee2e2',bd:'#fca5a5',tx:'#dc2626'}};
+function statusBadge(status,txId){
+  const c=STATUS_CFG[status]||{bg:'#f1f5f9',bd:'#cbd5e1',tx:'#64748b'};
+  const click=txId!=null
+    ?`onclick="toggleStatus(${txId})" style="background:${c.bg};border:1px solid ${c.bd};color:${c.tx};cursor:pointer;font-size:11px;padding:2px 8px;border-radius:9999px;font-weight:600;user-select:none;white-space:nowrap;"`
+    :`style="background:${c.bg};border:1px solid ${c.bd};color:${c.tx};cursor:default;font-size:11px;padding:2px 8px;border-radius:9999px;font-weight:600;user-select:none;white-space:nowrap;"`;
+  return `<span ${click}>${esc(status)}</span>`;
+}
+
+// ── Input style ───────────────────────────────────────────────────────────────
+const ISX=`background:#fff;border:1px solid #cbd5e1;color:#0f172a;border-radius:8px;padding:8px 12px;width:100%;outline:none;`;
+const FB=`onfocus="this.style.borderColor='#d97706'" onblur="this.style.borderColor='#cbd5e1'"`;
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let S={view:'dashboard',clients:[],transactions:[],cSearch:'',cFilter:'전체',cExpanded:null,txSearch:'',txTf:'전체',txSf:'전체',drawerOpen:false};
+let M={clientModal:null,txModal:null,confirm:null,scanModal:null};
+
+// ── Toast (최상단 정의 - saveC/saveTX에서 사용) ───────────────────────────────
+let _toastTimer=null;
+function showToast(msg){
+  let el=document.getElementById('toast');
+  if(!el){
+    el=document.createElement('div');el.id='toast';
+    el.style.cssText='position:fixed;bottom:calc(80px + env(safe-area-inset-bottom,0px));left:50%;transform:translateX(-50%) translateY(60px);background:#0f172a;color:#fff;padding:10px 20px;border-radius:9999px;font-size:13px;font-weight:500;z-index:9999;transition:transform .25s,opacity .25s;opacity:0;white-space:nowrap;pointer-events:none;';
+    document.body.appendChild(el);
+  }
+  el.textContent=msg;el.style.transform='translateX(-50%) translateY(0)';el.style.opacity='1';
+  clearTimeout(_toastTimer);
+  _toastTimer=setTimeout(()=>{el.style.transform='translateX(-50%) translateY(60px)';el.style.opacity='0';},2400);
+}
+
+// ── Persistence ───────────────────────────────────────────────────────────────
+function loadData(){
+  try{S.clients=JSON.parse(localStorage.getItem('crm_clients'))||SAMPLE_CLIENTS;}catch{S.clients=[...SAMPLE_CLIENTS];}
+  try{S.transactions=JSON.parse(localStorage.getItem('crm_tx'))||SAMPLE_TX;}catch{S.transactions=[...SAMPLE_TX];}
+}
+function saveC(){
+  try{localStorage.setItem('crm_clients',JSON.stringify(S.clients));}
+  catch(e){showToast('저장 실패: 저장 공간이 부족합니다.');}
+}
+function saveTX(){
+  try{localStorage.setItem('crm_tx',JSON.stringify(S.transactions));}
+  catch(e){showToast('저장 실패: 저장 공간이 부족합니다.');}
+}
+
+// ── CRUD ──────────────────────────────────────────────────────────────────────
+function saveClient(f){
+  if(f.id)S.clients=S.clients.map(c=>c.id===f.id?f:c);
+  else S.clients=[...S.clients,{...f,id:nextId(S.clients)}];
+  saveC();M.clientModal=null;render();
+}
+function deleteClient(id){
+  S.clients=S.clients.filter(c=>c.id!==id);
+  S.transactions=S.transactions.filter(t=>t.clientId!==id);
+  if(S.cExpanded===id)S.cExpanded=null;
+  saveC();saveTX();M.confirm=null;render();
+}
+function saveTxFn(f){
+  if(f.id)S.transactions=S.transactions.map(t=>t.id===f.id?f:t);
+  else S.transactions=[...S.transactions,{...f,id:nextId(S.transactions)}];
+  saveTX();M.txModal=null;render();
+}
+function deleteTxFn(id){S.transactions=S.transactions.filter(t=>t.id!==id);saveTX();M.confirm=null;render();}
+function toggleStatus(txId){
+  const next={미수금:'수금완료',수금완료:'미수금',미지급금:'지급완료',지급완료:'미지급금'};
+  S.transactions=S.transactions.map(t=>t.id===txId?{...t,status:next[t.status]||t.status}:t);
+  saveTX();render();
+}
+function completeStatus(txId,status){
+  S.transactions=S.transactions.map(t=>t.id===txId?{...t,status}:t);
+  saveTX();render();
+}
+
+// ── NAV ITEMS ─────────────────────────────────────────────────────────────────
+const NAV=[
+  {k:'dashboard',   label:'대시보드',   icon:I.grid},
+  {k:'clients',     label:'거래처 관리',icon:I.users},
+  {k:'transactions',label:'거래 내역',  icon:I.activity},
+  {k:'receivables', label:'채권·채무',  icon:I.card},
+];
+const LABELS={dashboard:'대시보드',clients:'거래처 관리',transactions:'거래 내역',receivables:'채권·채무'};
+
+// ── SIDEBAR INNER ─────────────────────────────────────────────────────────────
+function sidebarInner(onClose=''){
+  const btns=NAV.map(({k,label,icon})=>{
+    const a=S.view===k;
+    return `<button onclick="setView('${k}')${onClose}" ${a?'':'class="nav-btn"'}
+      style="width:100%;display:flex;align-items:center;gap:10px;padding:10px;border-radius:8px;border:none;cursor:pointer;margin-bottom:2px;text-align:left;background:${a?'#fef3c7':'transparent'};color:${a?'#b45309':'#64748b'};font-weight:${a?700:400};font-size:13px;">
+      ${icon}${esc(label)}
+    </button>`;
+  }).join('');
+  return `
+    <div style="padding:18px 16px;border-bottom:1px solid #e2e8f0;">
+      <div style="color:#b45309;font-weight:700;font-size:14px;">거래처·회계</div>
+      <div style="color:#94a3b8;font-size:11px;margin-top:2px;">관리 시스템</div>
+    </div>
+    <nav style="flex:1;padding:10px;overflow-y:auto;">${btns}</nav>
+    <div style="padding:10px;border-top:1px solid #e2e8f0;display:flex;flex-direction:column;gap:6px;">
+      <button onclick="exportData()" style="width:100%;display:flex;align-items:center;justify-content:center;gap:7px;padding:7px;border-radius:8px;border:1px solid #e2e8f0;background:#f8fafc;color:#475569;font-size:12px;font-weight:500;cursor:pointer;" onmouseenter="this.style.background='#f0fdf4';this.style.color='#16a34a';this.style.borderColor='#bbf7d0'" onmouseleave="this.style.background='#f8fafc';this.style.color='#475569';this.style.borderColor='#e2e8f0'">
+        ${I.download} JSON 저장
+      </button>
+      <button onclick="importData()" style="width:100%;display:flex;align-items:center;justify-content:center;gap:7px;padding:7px;border-radius:8px;border:1px solid #e2e8f0;background:#f8fafc;color:#475569;font-size:12px;font-weight:500;cursor:pointer;" onmouseenter="this.style.background='#eff6ff';this.style.color='#1d4ed8';this.style.borderColor='#bfdbfe'" onmouseleave="this.style.background='#f8fafc';this.style.color='#475569';this.style.borderColor='#e2e8f0'">
+        ${I.upload} JSON 불러오기
+      </button>
+      <div style="text-align:center;color:#cbd5e1;font-size:10px;padding-top:2px;">거래처 ${S.clients.length}개 · ${S.transactions.length}건</div>
+    </div>`;
+}
+
+// ── MOBILE HEADER ─────────────────────────────────────────────────────────────
+function buildMobileHeader(){
+  return `
+    <div class="mobile-header">
+      <button onclick="openDrawer()" style="background:none;border:none;cursor:pointer;color:#475569;display:flex;align-items:center;">${I.menu}</button>
+      <span style="font-size:14px;font-weight:700;color:#b45309;">거래처·회계</span>
+      <span style="font-size:12px;color:#94a3b8;">${esc(LABELS[S.view]||'')}</span>
+    </div>`;
+}
+
+// ── BOTTOM NAV ────────────────────────────────────────────────────────────────
+function buildBottomNav(){
+  const dots=NAV.map(({k})=>`<div style="width:5px;height:5px;border-radius:50%;background:${S.view===k?'#d97706':'#e2e8f0'};transition:background .2s;"></div>`).join('');
+  const items=NAV.map(({k,label,icon})=>{
+    const a=S.view===k;
+    return `<button onclick="setView('${k}')" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;background:none;border:none;color:${a?'#b45309':'#94a3b8'};padding:4px 0;">
+      ${icon}
+      <span style="font-size:9px;font-weight:${a?700:400};">${esc(label.replace(/\s/g,''))}</span>
+    </button>`;
+  }).join('');
+  return `<div class="bottom-wrap">
+    <div style="display:flex;justify-content:center;gap:6px;padding:5px 0 2px;background:#fff;">
+      ${dots}
+    </div>
+    <nav class="bottom-nav" style="border-top:1px solid #e2e8f0;">${items}</nav>
+  </div>`;
+}
+
+// ── SIDEBAR DRAWER (mobile) ───────────────────────────────────────────────────
+function buildDrawer(){
+  return `
+    <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeDrawer()" style="display:${S.drawerOpen?'block':'none'};"></div>
+    <div class="sidebar-drawer ${S.drawerOpen?'open':''}" id="sidebarDrawer">
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid #e2e8f0;">
+        <span style="color:#b45309;font-weight:700;font-size:14px;">메뉴</span>
+        <button onclick="closeDrawer()" style="background:none;border:none;cursor:pointer;color:#94a3b8;">${I.x}</button>
+      </div>
+      <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;">${sidebarInner(";closeDrawer()")}</div>
+    </div>`;
+}
+
+// ── DASHBOARD ─────────────────────────────────────────────────────────────────
+function buildDashboard(){
+  const mon=thisMonth();
+  const monT=S.transactions.filter(t=>t.date.startsWith(mon));
+  const rev=monT.filter(t=>t.type==='매출').reduce((s,t)=>s+t.amount,0);
+  const pur=monT.filter(t=>t.type==='매입').reduce((s,t)=>s+t.amount,0);
+  const rcv=S.transactions.filter(t=>t.status==='미수금').reduce((s,t)=>s+t.amount+t.tax,0);
+  const pay=S.transactions.filter(t=>t.status==='미지급금').reduce((s,t)=>s+t.amount+t.tax,0);
+  const recent=[...S.transactions].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,6);
+  const clientRev={};
+  S.transactions.filter(t=>t.type==='매출').forEach(t=>{clientRev[t.clientId]=(clientRev[t.clientId]||0)+t.amount;});
+  const top=Object.entries(clientRev).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([id,v])=>({c:S.clients.find(x=>x.id===+id),v}));
+  const maxV=top[0]?.v||1;
+
+  const statCards=[
+    {label:'이번달 매출',val:fmtW(rev),sub:`${monT.filter(t=>t.type==='매출').length}건`,color:'#16a34a',bg:'#f0fdf4',bd:'#bbf7d0'},
+    {label:'이번달 매입',val:fmtW(pur),sub:`${monT.filter(t=>t.type==='매입').length}건`,color:'#dc2626',bg:'#fff1f2',bd:'#fecdd3'},
+    {label:'미수금',val:fmtW(rcv),sub:'수금 대기',color:'#b45309',bg:'#fefce8',bd:'#fef08a'},
+    {label:'미지급금',val:fmtW(pay),sub:'지급 대기',color:'#1d4ed8',bg:'#eff6ff',bd:'#bfdbfe'},
+  ].map(({label,val,sub,color,bg,bd})=>`
+    <div style="background:${bg};border:1px solid ${bd};border-radius:12px;padding:16px;">
+      <div style="color:#64748b;font-size:11px;margin-bottom:6px;">${esc(label)}</div>
+      <div class="stat-val" style="color:${color};font-size:20px;font-weight:700;margin-bottom:3px;">${esc(val)}</div>
+      <div style="color:#94a3b8;font-size:11px;">${esc(sub)}</div>
+    </div>`).join('');
+
+  const recentRows=recent.map(tx=>{
+    const cl=S.clients.find(c=>c.id===tx.clientId);
+    const color=tx.type==='매출'?'#16a34a':'#dc2626';
+    return `
+      <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #f1f5f9;">
+        <div style="width:3px;height:34px;border-radius:2px;background:${color};flex-shrink:0;"></div>
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;align-items:center;gap:5px;">
+            <span style="color:#0f172a;font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(cl?.name||'?')}</span>
+            <span style="color:${color};font-size:11px;flex-shrink:0;">${esc(tx.type)}</span>
+          </div>
+          <div style="color:#94a3b8;font-size:11px;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(tx.memo||'-')} · ${esc(tx.date)}</div>
+        </div>
+        <div style="text-align:right;flex-shrink:0;">
+          <div style="color:${color};font-size:12px;font-weight:600;">${tx.type==='매출'?'+':'-'}${fmtW(tx.amount)}</div>
+          <div style="margin-top:3px;">${statusBadge(tx.status)}</div>
+        </div>
+      </div>`;
+  }).join('');
+
+  const topRows=top.map(({c,v})=>`
+    <div style="margin-bottom:10px;">
+      <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
+        <span style="color:#334155;font-size:12px;">${esc(c?.name||'?')}</span>
+        <span style="color:#16a34a;font-size:12px;font-weight:600;">${fmtW(v)}</span>
+      </div>
+      <div style="height:4px;background:#f1f5f9;border-radius:2px;"><div style="height:100%;background:#16a34a;border-radius:2px;width:${(v/maxV)*100}%;opacity:.65;"></div></div>
+    </div>`).join('');
+
+  const sumCards=[
+    {label:'전체',val:S.clients.length,color:'#334155',bg:'#f8fafc'},
+    {label:'매출처',val:S.clients.filter(c=>c.type==='매출처').length,color:'#16a34a',bg:'#f0fdf4'},
+    {label:'매입처',val:S.clients.filter(c=>c.type==='매입처').length,color:'#1d4ed8',bg:'#eff6ff'},
+  ].map(({label,val,color,bg})=>`
+    <div style="background:${bg};border-radius:8px;padding:10px 0;text-align:center;">
+      <div style="color:${color};font-size:18px;font-weight:700;">${val}</div>
+      <div style="color:#94a3b8;font-size:11px;margin-top:1px;">${esc(label)}</div>
+    </div>`).join('');
+
+  const dateStr=new Date().toLocaleDateString('ko-KR',{year:'numeric',month:'long',day:'numeric',weekday:'long'});
+  return `
+    <div style="display:flex;flex-direction:column;gap:18px;">
+      <div>
+        <h1 class="page-title" style="color:#0f172a;font-size:20px;font-weight:700;">대시보드</h1>
+        <p style="color:#64748b;font-size:12px;margin-top:3px;">${esc(dateStr)}</p>
+      </div>
+      <div class="g4">${statCards}</div>
+      <div class="dash-layout">
+        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:16px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
+            <span style="color:#0f172a;font-weight:600;font-size:14px;">최근 거래</span>
+            <button onclick="setView('transactions')" style="color:#d97706;font-size:12px;background:none;border:none;cursor:pointer;">전체보기 →</button>
+          </div>
+          ${recentRows||'<div style="padding:20px 0;text-align:center;color:#94a3b8;font-size:13px;">거래 없음</div>'}
+        </div>
+        <div class="dash-right">
+          <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:16px;">
+            <div style="color:#0f172a;font-weight:600;font-size:14px;margin-bottom:12px;">매출 상위 거래처</div>
+            ${topRows||'<div style="color:#94a3b8;font-size:13px;text-align:center;padding:16px 0;">데이터 없음</div>'}
+          </div>
+          <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:16px;">
+            <div style="color:#0f172a;font-weight:600;font-size:14px;margin-bottom:12px;">거래처 현황</div>
+            <div class="dash-right-inner">${sumCards}</div>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+// ── CLIENTS VIEW ──────────────────────────────────────────────────────────────
+function buildClients(){
+  const filtered=S.clients.filter(c=>(S.cFilter==='전체'||c.type===S.cFilter)&&matchAny(S.cSearch,c.name,c.bizNo,c.rep,c.phone,c.memo));
+  const clientStats=id=>{
+    const txs=S.transactions.filter(t=>t.clientId===id);
+    return{txs,rev:txs.filter(t=>t.type==='매출').reduce((s,t)=>s+t.amount,0),pur:txs.filter(t=>t.type==='매입').reduce((s,t)=>s+t.amount,0),pend:txs.filter(t=>t.status==='미수금'||t.status==='미지급금').reduce((s,t)=>s+t.amount+t.tax,0)};
+  };
+  const filterBtns=['전체','매출처','매입처','매출/매입'].map(t=>{
+    const a=S.cFilter===t;
+    return `<button onclick="setCFilter('${t}')" style="padding:7px 11px;border-radius:8px;font-size:12px;font-weight:${a?700:400};background:${a?'#d97706':'#f8fafc'};color:${a?'#fff':'#64748b'};border:1px solid ${a?'#d97706':'#e2e8f0'};cursor:pointer;">${esc(t)}</button>`;
+  }).join('');
+
+  const rows=filtered.map(c=>{
+    const s=clientStats(c.id);
+    const open=S.cExpanded===c.id;
+    const tc=c.type==='매출처'?'#16a34a':c.type==='매입처'?'#1d4ed8':'#b45309';
+    let expHtml='';
+    if(open){
+      const mc=[
+        {label:'누적 매출',val:fmtW(s.rev),color:'#16a34a',bg:'#f0fdf4'},
+        {label:'누적 매입',val:fmtW(s.pur),color:'#dc2626',bg:'#fff1f2'},
+        {label:'미결제',val:fmtW(s.pend),color:'#b45309',bg:'#fefce8'},
+        {label:'거래 건수',val:`${s.txs.length}건`,color:'#334155',bg:'#f8fafc'},
+      ].map(({label,val,color,bg})=>`<div style="background:${bg};border-radius:8px;padding:9px 10px;"><div style="color:#94a3b8;font-size:11px;">${esc(label)}</div><div style="color:${color};font-weight:700;font-size:14px;margin-top:2px;">${esc(val)}</div></div>`).join('');
+      const info=[['사업자번호',c.bizNo],['대표자',c.rep],['전화',c.phone],['이메일',c.email],['주소',c.address],['메모',c.memo]]
+        .filter(([,v])=>v).map(([k,v])=>`<div style="display:flex;gap:8px;"><span style="color:#94a3b8;min-width:60px;font-size:12px;">${esc(k)}</span><span style="color:#334155;font-size:12px;word-break:break-all;">${esc(v)}</span></div>`).join('');
+      const txHist=[...s.txs].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,5).map(tx=>`
+        <div style="display:flex;align-items:center;padding:7px 0;border-bottom:1px solid #f1f5f9;gap:8px;">
+          <span style="color:${tx.type==='매출'?'#16a34a':'#dc2626'};font-size:11px;width:28px;flex-shrink:0;">${esc(tx.type)}</span>
+          <span style="color:#475569;font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(tx.memo||'-')}</span>
+          <span style="color:#94a3b8;font-size:11px;flex-shrink:0;">${esc(tx.date)}</span>
+          <span style="color:${tx.type==='매출'?'#16a34a':'#dc2626'};font-size:12px;font-weight:600;flex-shrink:0;">${fmtW(tx.amount)}</span>
+          <div style="flex-shrink:0;">${statusBadge(tx.status)}</div>
+        </div>`).join('');
+      expHtml=`
+        <div style="background:#fafafa;border-bottom:1px solid #e2e8f0;padding:14px;">
+          <div class="g4" style="margin-bottom:12px;">${mc}</div>
+          ${info?`<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px 20px;margin-bottom:10px;">${info}</div>`:''}
+          ${s.txs.length?`<div style="color:#94a3b8;font-size:11px;font-weight:500;margin-bottom:5px;">최근 거래 이력</div>${txHist}`:''}
+        </div>`;
+    }
+    return `
+      <div>
+        <div onclick="toggleExpand(${c.id})" class="hover-row" style="display:flex;align-items:center;padding:12px 14px;border-bottom:1px solid #f1f5f9;cursor:pointer;gap:8px;">
+          <div style="flex:1;min-width:0;">
+            <div style="display:flex;align-items:center;gap:5px;">
+              <span style="color:${open?'#d97706':'#0f172a'};font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c.name)}</span>
+              <span style="color:#94a3b8;flex-shrink:0;">${open?I.chevD:I.chevR}</span>
+            </div>
+            <div style="color:#94a3b8;font-size:11px;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c.bizNo||'사업자번호 미등록')} · ${esc(c.phone||'-')}</div>
+          </div>
+          <span class="hide-sm" style="width:60px;text-align:center;font-size:11px;font-weight:600;color:${tc};flex-shrink:0;">${esc(c.type)}</span>
+          <span class="hide-sm" style="width:72px;text-align:center;color:#475569;font-size:12px;flex-shrink:0;">${esc(c.rep||'-')}</span>
+          <span style="width:100px;text-align:right;color:#16a34a;font-size:12px;font-weight:600;flex-shrink:0;">${fmtW(s.rev)}</span>
+          <div style="width:52px;display:flex;justify-content:center;gap:8px;flex-shrink:0;" onclick="event.stopPropagation()">
+            <button onclick="editClient(${c.id})" style="color:#94a3b8;background:none;border:none;cursor:pointer;" onmouseenter="this.style.color='#d97706'" onmouseleave="this.style.color='#94a3b8'">${I.edit}</button>
+            <button onclick="confirmDelClient(${c.id})" style="color:#94a3b8;background:none;border:none;cursor:pointer;" onmouseenter="this.style.color='#dc2626'" onmouseleave="this.style.color='#94a3b8'">${I.trash}</button>
+          </div>
+        </div>
+        ${expHtml}
+      </div>`;
+  }).join('');
+
+  return `
+    <div style="display:flex;flex-direction:column;gap:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+        <div>
+          <h1 class="page-title" style="color:#0f172a;font-size:20px;font-weight:700;">거래처 관리</h1>
+          <p style="color:#64748b;font-size:12px;margin-top:2px;">총 ${S.clients.length}개</p>
+        </div>
+        <button onclick="openClientModal('add')" style="display:flex;align-items:center;gap:5px;background:#d97706;color:#fff;border:none;border-radius:8px;padding:8px 12px;font-size:13px;font-weight:700;cursor:pointer;flex-shrink:0;">${I.plus} <span class="hide-sm">거래처</span> 추가</button>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <div style="position:relative;flex:1;min-width:160px;">
+          <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:#94a3b8;pointer-events:none;">${I.search}</span>
+          <input id="cSearchInput" value="${esc(S.cSearch)}" oninput="setCSearch(this.value)" placeholder="검색… (초성 가능)" style="${ISX}padding-left:30px;" ${FB}>
+        </div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap;">${filterBtns}</div>
+      </div>
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+        <div style="display:flex;padding:9px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0;gap:8px;">
+          <span style="flex:1;color:#94a3b8;font-size:11px;font-weight:500;">거래처명</span>
+          <span class="hide-sm" style="width:60px;color:#94a3b8;font-size:11px;text-align:center;">구분</span>
+          <span class="hide-sm" style="width:72px;color:#94a3b8;font-size:11px;text-align:center;">대표자</span>
+          <span style="width:100px;color:#94a3b8;font-size:11px;text-align:right;">누적 매출</span>
+          <span style="width:52px;color:#94a3b8;font-size:11px;text-align:center;">관리</span>
+        </div>
+        ${filtered.length===0?'<div style="padding:40px 0;text-align:center;color:#94a3b8;font-size:13px;">거래처가 없습니다.</div>':rows}
+      </div>
+    </div>`;
+}
+
+// ── TRANSACTIONS VIEW ─────────────────────────────────────────────────────────
+function buildTransactions(){
+  const filtered=[...S.transactions].filter(t=>{
+    const cl=S.clients.find(c=>c.id===t.clientId);
+    return(S.txTf==='전체'||t.type===S.txTf)&&(S.txSf==='전체'||t.status===S.txSf)&&matchAny(S.txSearch,cl?.name,t.memo);
+  }).sort((a,b)=>b.date.localeCompare(a.date));
+
+  const sumRev=filtered.filter(t=>t.type==='매출').reduce((s,t)=>s+t.amount,0);
+  const sumPur=filtered.filter(t=>t.type==='매입').reduce((s,t)=>s+t.amount,0);
+  const plColor=sumRev-sumPur>=0?'#16a34a':'#dc2626';
+
+  const typeBtns=['전체','매출','매입'].map(t=>{const a=S.txTf===t;return`<button onclick="setTxTf('${t}')" style="padding:7px 10px;border-radius:8px;font-size:12px;font-weight:${a?700:400};background:${a?'#d97706':'#f8fafc'};color:${a?'#fff':'#64748b'};border:1px solid ${a?'#d97706':'#e2e8f0'};cursor:pointer;">${esc(t)}</button>`;}).join('');
+  const stBtns=['전체','미수금','수금완료','미지급금','지급완료'].map(s=>{const a=S.txSf===s;return`<button onclick="setTxSf('${s}')" style="padding:7px 9px;border-radius:8px;font-size:11px;font-weight:${a?700:400};background:${a?'#d97706':'#f8fafc'};color:${a?'#fff':'#64748b'};border:1px solid ${a?'#d97706':'#e2e8f0'};cursor:pointer;">${esc(s)}</button>`;}).join('');
+
+  const sumCards=[
+    {label:'조회 매출',val:fmtW(sumRev),color:'#16a34a',bg:'#f0fdf4',bd:'#bbf7d0'},
+    {label:'조회 매입',val:fmtW(sumPur),color:'#dc2626',bg:'#fff1f2',bd:'#fecdd3'},
+    {label:'손익',val:fmtW(sumRev-sumPur),color:plColor,bg:'#f8fafc',bd:'#e2e8f0'},
+  ].map(({label,val,color,bg,bd})=>`
+    <div style="background:${bg};border:1px solid ${bd};border-radius:10px;padding:12px 14px;">
+      <div style="color:#64748b;font-size:11px;margin-bottom:4px;">${esc(label)}</div>
+      <div style="color:${color};font-size:18px;font-weight:700;">${esc(val)}</div>
+    </div>`).join('');
+
+  const rows=filtered.map(tx=>{
+    const cl=S.clients.find(c=>c.id===tx.clientId);
+    const color=tx.type==='매출'?'#16a34a':'#dc2626';
+    return `
+      <div class="hover-row" style="display:flex;align-items:center;padding:11px 14px;border-bottom:1px solid #f1f5f9;gap:8px;">
+        <span class="col-date" style="color:#94a3b8;font-size:11px;">${esc(tx.date)}</span>
+        <div style="flex:1;min-width:0;">
+          <div style="color:#0f172a;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(cl?.name||'?')}</div>
+          <div style="color:#94a3b8;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(tx.memo||'-')}</div>
+        </div>
+        <span class="col-type" style="font-size:11px;font-weight:600;color:${color};">${esc(tx.type)}</span>
+        <span class="col-amt" style="color:${color};font-size:12px;font-weight:600;">${fmtW(tx.amount)}</span>
+        <span class="col-tax hide-sm" style="color:#94a3b8;font-size:11px;">${fmtW(tx.tax)}</span>
+        <div class="col-status">${statusBadge(tx.status,tx.id)}</div>
+        <div class="col-actions">
+          <button onclick="editTx(${tx.id})" style="color:#94a3b8;background:none;border:none;cursor:pointer;" onmouseenter="this.style.color='#d97706'" onmouseleave="this.style.color='#94a3b8'">${I.edit}</button>
+          <button onclick="confirmDelTx(${tx.id})" style="color:#94a3b8;background:none;border:none;cursor:pointer;" onmouseenter="this.style.color='#dc2626'" onmouseleave="this.style.color='#94a3b8'">${I.trash}</button>
+        </div>
+      </div>`;
+  }).join('');
+
+  return `
+    <div style="display:flex;flex-direction:column;gap:16px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+        <div>
+          <h1 class="page-title" style="color:#0f172a;font-size:20px;font-weight:700;">거래 내역</h1>
+          <p style="color:#64748b;font-size:12px;margin-top:2px;">총 ${S.transactions.length}건</p>
+        </div>
+        <button onclick="openTxModal('add')" style="display:flex;align-items:center;gap:5px;background:#d97706;color:#fff;border:none;border-radius:8px;padding:8px 12px;font-size:13px;font-weight:700;cursor:pointer;flex-shrink:0;">${I.plus} <span class="hide-sm">거래</span> 추가</button>
+        <button onclick="openScanInput()" style="display:flex;align-items:center;gap:5px;background:#1d4ed8;color:#fff;border:none;border-radius:8px;padding:8px 12px;font-size:13px;font-weight:600;cursor:pointer;flex-shrink:0;" title="영수증 촬영으로 매입 자동 추가">${I.camera} <span class="hide-sm">영수증</span> 스캔</button>
+      </div>
+      <div class="g3">${sumCards}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;">
+        <div style="position:relative;flex:1;min-width:140px;">
+          <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:#94a3b8;pointer-events:none;">${I.search}</span>
+          <input id="txSearchInput" value="${esc(S.txSearch)}" oninput="setTxSearch(this.value)" placeholder="검색… (초성 가능)" style="${ISX}padding-left:30px;" ${FB}>
+        </div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap;">${typeBtns}</div>
+        <div style="display:flex;gap:4px;flex-wrap:wrap;">${stBtns}</div>
+      </div>
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+        <div style="display:flex;padding:9px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0;gap:8px;">
+          <span class="col-date" style="color:#94a3b8;font-size:11px;font-weight:500;">날짜</span>
+          <span style="flex:1;color:#94a3b8;font-size:11px;font-weight:500;">거래처</span>
+          <span class="col-type" style="color:#94a3b8;font-size:11px;">구분</span>
+          <span class="col-amt" style="color:#94a3b8;font-size:11px;">공급가액</span>
+          <span class="col-tax hide-sm" style="color:#94a3b8;font-size:11px;">세액</span>
+          <span class="col-status" style="color:#94a3b8;font-size:11px;text-align:center;">상태</span>
+          <span class="col-actions" style="color:#94a3b8;font-size:11px;">관리</span>
+        </div>
+        ${filtered.length===0?'<div style="padding:40px 0;text-align:center;color:#94a3b8;font-size:13px;">거래 내역이 없습니다.</div>':rows}
+      </div>
+      <p style="color:#cbd5e1;font-size:11px;text-align:center;">상태 배지를 클릭하면 완료 처리됩니다.</p>
+    </div>`;
+}
+
+// ── RECEIVABLES VIEW ──────────────────────────────────────────────────────────
+function buildReceivables(){
+  const rec=S.transactions.filter(t=>t.status==='미수금');
+  const pay=S.transactions.filter(t=>t.status==='미지급금');
+  const totalRec=rec.reduce((s,t)=>s+t.amount+t.tax,0);
+  const totalPay=pay.reduce((s,t)=>s+t.amount+t.tax,0);
+
+  function section(title,items,color,bg,bd,btnColor,btnBd,sv){
+    const rows=[...items].sort((a,b)=>a.date.localeCompare(b.date)).map(tx=>{
+      const cl=S.clients.find(c=>c.id===tx.clientId);
+      const days=Math.floor((new Date()-new Date(tx.date))/86400000);
+      const uc=days>30?'#dc2626':days>7?'#b45309':'#94a3b8';
+      const ucBg=days>30?'#fee2e2':days>7?'#fef3c7':'#f1f5f9';
+      return `
+        <div style="display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid #f1f5f9;flex-wrap:wrap;">
+          <div style="flex:1;min-width:140px;">
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:2px;">
+              <span style="color:#0f172a;font-weight:500;font-size:13px;">${esc(cl?.name||'?')}</span>
+              <span style="color:${uc};font-size:11px;background:${ucBg};padding:1px 6px;border-radius:4px;">${days}일 경과</span>
+            </div>
+            <div style="color:#94a3b8;font-size:11px;">${esc(tx.memo||'-')} · ${esc(tx.date)}</div>
+          </div>
+          <div style="text-align:right;">
+            <div style="color:${color};font-weight:700;font-size:14px;">${fmtW(tx.amount+tx.tax)}</div>
+            <div style="color:#94a3b8;font-size:10px;">공급가 ${fmtW(tx.amount)}+세액 ${fmtW(tx.tax)}</div>
+          </div>
+          <button onclick="completeStatus(${tx.id},'${sv}')"
+            style="display:flex;align-items:center;gap:4px;padding:7px 11px;background:${btnBd}20;border:1px solid ${btnBd};color:${btnColor};border-radius:8px;font-size:12px;cursor:pointer;white-space:nowrap;font-weight:600;">
+            ${I.check} 완료처리
+          </button>
+        </div>`;
+    }).join('');
+    const total=fmtW(items.reduce((s,t)=>s+t.amount+t.tax,0));
+    return `
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;background:${bg};border-bottom:1px solid ${bd};">
+          <h3 style="color:${color};font-weight:600;font-size:14px;">${esc(title)}</h3>
+          <span style="color:${color};font-weight:700;font-size:16px;">${total}</span>
+        </div>
+        ${items.length===0?'<div style="padding:28px 0;text-align:center;color:#94a3b8;font-size:13px;">없음</div>':rows}
+      </div>`;
+  }
+
+  return `
+    <div style="display:flex;flex-direction:column;gap:16px;">
+      <div>
+        <h1 class="page-title" style="color:#0f172a;font-size:20px;font-weight:700;">채권·채무 관리</h1>
+        <p style="color:#64748b;font-size:12px;margin-top:2px;">미수금 및 미지급금 현황</p>
+      </div>
+      <div class="g2">
+        <div style="background:#fefce8;border:1px solid #fcd34d;border-radius:12px;padding:16px;">
+          <div style="color:#b45309;font-size:12px;margin-bottom:5px;">총 미수금 (받을 돈)</div>
+          <div style="color:#b45309;font-size:24px;font-weight:700;">${fmtW(totalRec)}</div>
+          <div style="color:#d97706;font-size:11px;margin-top:3px;opacity:.75;">${rec.length}건 미수금</div>
+        </div>
+        <div style="background:#fff1f2;border:1px solid #fecdd3;border-radius:12px;padding:16px;">
+          <div style="color:#dc2626;font-size:12px;margin-bottom:5px;">총 미지급금 (줄 돈)</div>
+          <div style="color:#dc2626;font-size:24px;font-weight:700;">${fmtW(totalPay)}</div>
+          <div style="color:#ef4444;font-size:11px;margin-top:3px;opacity:.75;">${pay.length}건 미지급금</div>
+        </div>
+      </div>
+      ${section('미수금 (받을 돈)',rec,'#b45309','#fefce8','#fcd34d','#16a34a','#86efac','수금완료')}
+      ${section('미지급금 (줄 돈)',pay,'#dc2626','#fff1f2','#fecdd3','#1d4ed8','#93c5fd','지급완료')}
+    </div>`;
+}
+
+// ── CLIENT MODAL ──────────────────────────────────────────────────────────────
+function buildClientModal(){
+  const m=M.clientModal;
+  const isEd=m!=='add'&&typeof m==='object';
+  const f=isEd?m:{name:'',bizNo:'',rep:'',phone:'',email:'',address:'',type:'매출처',memo:''};
+  const inp=(key,ph,type='text')=>`<input id="cf_${key}" type="${type}" value="${esc(f[key]||'')}" placeholder="${esc(ph)}" style="${ISX}" ${FB}>`;
+  const content=`
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">거래처명<span style="color:#dc2626">*</span></label><div style="margin-top:4px;">${inp('name','회사명')}</div></div>
+      <div><label style="font-size:12px;color:#64748b;">사업자번호</label><div style="margin-top:4px;">${inp('bizNo','000-00-00000')}</div></div>
+      <div><label style="font-size:12px;color:#64748b;">구분<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><select id="cf_type" style="${ISX}"><option ${f.type==='매출처'?'selected':''}>매출처</option><option ${f.type==='매입처'?'selected':''}>매입처</option><option ${f.type==='매출/매입'?'selected':''}>매출/매입</option></select></div></div>
+      <div><label style="font-size:12px;color:#64748b;">대표자</label><div style="margin-top:4px;">${inp('rep','대표자명')}</div></div>
+      <div><label style="font-size:12px;color:#64748b;">전화번호</label><div style="margin-top:4px;">${inp('phone','02-0000-0000')}</div></div>
+      <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">이메일</label><div style="margin-top:4px;">${inp('email','email@company.com','email')}</div></div>
+      <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">주소</label><div style="margin-top:4px;">${inp('address','주소 입력')}</div></div>
+      <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">메모</label><div style="margin-top:4px;"><textarea id="cf_memo" placeholder="특이사항" rows="2" style="${ISX}resize:none;" ${FB}>${esc(f.memo||'')}</textarea></div></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:16px;">
+      <button onclick="closeClientModal()" style="flex:1;padding:10px 0;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:8px;font-size:13px;cursor:pointer;">취소</button>
+      <button onclick="submitClientModal(${isEd?f.id:'null'})" style="flex:1;padding:10px 0;background:#d97706;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;">저장</button>
+    </div>`;
+  return modalWrap(isEd?'거래처 수정':'거래처 추가','closeClientModal()',480,content);
+}
+
+// ── TX MODAL ──────────────────────────────────────────────────────────────────
+function buildTxModal(){
+  const m=M.txModal;
+  const isEd=m!=='add'&&typeof m==='object';
+  const f=isEd?m:{date:today(),clientId:S.clients[0]?.id||1,type:'매출',amount:'',tax:'',memo:'',status:'미수금'};
+  const clientOpts=S.clients.map(c=>`<option value="${c.id}" ${c.id===f.clientId?'selected':''}>${esc(c.name)}</option>`).join('');
+  const stOpts=(f.type==='매출'?['미수금','수금완료']:['미지급금','지급완료']).map(s=>`<option ${s===f.status?'selected':''}>${esc(s)}</option>`).join('');
+  const preview=f.amount>0?`<div id="txTotal" style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 14px;margin-top:12px;display:flex;justify-content:space-between;align-items:center;"><span style="color:#16a34a;font-size:12px;">합계 금액</span><span style="color:#16a34a;font-weight:700;font-size:16px;">${fmtW((+f.amount||0)+(+f.tax||0))}</span></div>`:`<div id="txTotal"></div>`;
+  const content=`
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+      <div><label style="font-size:12px;color:#64748b;">거래일자<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><input id="tf_date" type="date" value="${esc(f.date)}" style="${ISX}"></div></div>
+      <div><label style="font-size:12px;color:#64748b;">구분<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><select id="tf_type" onchange="onTxType(this.value)" style="${ISX}"><option ${f.type==='매출'?'selected':''}>매출</option><option ${f.type==='매입'?'selected':''}>매입</option></select></div></div>
+      <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">거래처<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><select id="tf_clientId" style="${ISX}">${clientOpts}</select></div></div>
+      <div><label style="font-size:12px;color:#64748b;">공급가액<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><input id="tf_amount" value="${f.amount?fmt(f.amount):''}" oninput="onTxAmt(this.value)" placeholder="0" style="${ISX}" ${FB}></div></div>
+      <div><label style="font-size:12px;color:#64748b;">세액 (자동계산)</label><div style="margin-top:4px;"><input id="tf_tax" value="${f.tax?fmt(f.tax):''}" oninput="onTxTax(this.value)" placeholder="0" style="${ISX}" ${FB}></div></div>
+      <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">적요</label><div style="margin-top:4px;"><input id="tf_memo" value="${esc(f.memo||'')}" placeholder="거래 내용" style="${ISX}" ${FB}></div></div>
+      <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">상태</label><div style="margin-top:4px;"><select id="tf_status" style="${ISX}">${stOpts}</select></div></div>
+    </div>
+    ${preview}
+    <div style="display:flex;gap:8px;margin-top:16px;">
+      <button onclick="closeTxModal()" style="flex:1;padding:10px 0;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:8px;font-size:13px;cursor:pointer;">취소</button>
+      <button onclick="submitTxModal(${isEd?f.id:'null'})" style="flex:1;padding:10px 0;background:#d97706;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;">저장</button>
+    </div>`;
+  return modalWrap(isEd?'거래 수정':'거래 추가','closeTxModal()',480,content);
+}
+
+// ── CONFIRM ───────────────────────────────────────────────────────────────────
+function buildConfirm(){
+  const c=M.confirm;if(!c)return'';
+  return `
+    <div style="position:fixed;top:0;right:0;bottom:0;left:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(15,23,42,.4);">
+      <div style="background:#fff;border:1px solid #e2e8f0;max-width:300px;width:100%;padding:22px;border-radius:16px;box-shadow:0 20px 40px rgba(0,0,0,.12);">
+        <p style="color:#0f172a;font-size:14px;text-align:center;margin-bottom:18px;white-space:pre-line;">${esc(c.msg)}</p>
+        <div style="display:flex;gap:8px;">
+          <button onclick="M.confirm=null;renderModals()" style="flex:1;padding:9px 0;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:8px;font-size:13px;cursor:pointer;">취소</button>
+          <button onclick="${c.okStr}" style="flex:1;padding:9px 0;background:#dc2626;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">삭제</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function modalWrap(title,onClose,maxW,content){
+  return `
+    <div style="position:fixed;top:0;right:0;bottom:0;left:0;z-index:50;display:flex;align-items:flex-end;justify-content:center;padding:0;background:rgba(15,23,42,.35);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);" id="modalBackdrop">
+      <div style="background:#fff;border:1px solid #e2e8f0;width:100%;max-width:${maxW}px;border-radius:16px 16px 0 0;box-shadow:0 -8px 40px rgba(0,0,0,.12);max-height:92vh;max-height:92dvh;display:flex;flex-direction:column;">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid #f1f5f9;flex-shrink:0;">
+          <span style="color:#0f172a;font-weight:600;font-size:15px;">${esc(title)}</span>
+          <button onclick="${onClose}" style="color:#94a3b8;background:none;border:none;padding:4px;">${I.x}</button>
+        </div>
+        <div style="padding:18px;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:calc(18px + env(safe-area-inset-bottom,0px));">${content}</div>
+      </div>
+    </div>`;
+}
+
+// ── AI 영수증 스캔 ─────────────────────────────────────────────────────────────
+function openScanInput(){
+  // 로컬 파일(file://, content://)에서 실행 중이면 API 호출 불가 → 안내
+  const proto=location.protocol;
+  if(proto==='file:'||proto==='content:'||proto==='blob:'){
+    M.scanModal={state:'localfile',previewUrl:null,base64:null,mediaType:null,result:null,error:null};
+    renderModals();
+    return;
+  }
+  const input=document.createElement('input');
+  input.type='file';
+  input.accept='image/*';
+  input.capture='environment'; // 후면 카메라 우선
+  input.style.display='none';
+  document.body.appendChild(input);
+  input.onchange=async e=>{
+    const file=e.target.files[0];
+    document.body.removeChild(input);
+    if(!file)return;
+    // 5MB 제한
+    if(file.size>5*1024*1024){showToast('이미지가 너무 큽니다. (최대 5MB)');return;}
+    await runScan(file);
+  };
+  input.click();
+}
+
+async function runScan(file){
+  // 미리보기 URL
+  const previewUrl=URL.createObjectURL(file);
+  // base64 변환
+  const base64=await new Promise((res,rej)=>{
+    const r=new FileReader();
+    r.onload=()=>res(r.result.split(',')[1]);
+    r.onerror=()=>rej(new Error('read failed'));
+    r.readAsDataURL(file);
+  });
+  const mediaType=file.type||'image/jpeg';
+
+  // 로딩 모달 표시
+  M.scanModal={state:'loading',previewUrl,base64,mediaType,result:null,error:null};
+  renderModals();
+
+  try{
+    const resp=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        model:'claude-sonnet-4-20250514',
+        max_tokens:1000,
+        messages:[{
+          role:'user',
+          content:[
+            {type:'image',source:{type:'base64',media_type:mediaType,data:base64}},
+            {type:'text',text:`이 이미지는 영수증, 세금계산서, 청구서, 거래명세서 등 매입 관련 문서입니다.
+이미지를 분석하여 아래 JSON 형식으로만 응답하세요. 마크다운 코드블록 없이 JSON만 출력하세요.
+
+{
+  "supplierName": "공급자(판매처) 상호명. 없으면 null",
+  "date": "거래일자 YYYY-MM-DD 형식. 없으면 오늘 날짜",
+  "amount": "공급가액(세금 제외) 숫자만. 없으면 0",
+  "tax": "부가세액 숫자만. 없으면 0",
+  "memo": "품목이나 거래내용 요약 (50자 이내)",
+  "confidence": "분석 신뢰도 high/medium/low",
+  "note": "사용자에게 전달할 참고사항 (한국어, 없으면 null)"
+}
+
+규칙:
+- amount와 tax는 콤마 없는 정수
+- 세금계산서면 공급가액과 세액을 분리
+- 영수증(부가세 포함가)이면 amount=총액÷1.1 반올림, tax=총액-amount
+- 날짜를 읽기 어려우면 오늘(${localDate()}) 사용
+- 문서가 아닌 이미지면 confidence=low, note에 설명`}
+          ]
+        }]
+      })
+    });
+
+    if(!resp.ok){
+      const err=await resp.json().catch(()=>({}));
+      throw new Error(err?.error?.message||`API 오류 ${resp.status}`);
+    }
+
+    const data=await resp.json();
+    const raw=data.content?.find(b=>b.type==='text')?.text||'{}';
+    // JSON 파싱 (마크다운 펜스 제거 방어)
+    const clean=raw.replace(/```[a-z]*\n?/g,'').replace(/```/g,'').trim();
+    const parsed=JSON.parse(clean);
+
+    M.scanModal={state:'done',previewUrl,base64,mediaType,result:parsed,error:null};
+  }catch(err){
+    M.scanModal={state:'error',previewUrl,base64,mediaType,result:null,error:err.message||'분석 실패'};
+  }
+  renderModals();
+}
+
+function buildScanModal(){
+  const m=M.scanModal;
+  if(!m)return'';
+
+  // ── 로컬 파일 실행 안내 ──
+  if(m.state==='localfile'){
+    return modalWrap('AI 영수증 스캔 사용법','closeScanModal()',500,`
+      <div style="text-align:center;padding:8px 0 20px;">
+        <div style="font-size:40px;margin-bottom:12px;">🌐</div>
+        <div style="color:#0f172a;font-weight:700;font-size:16px;margin-bottom:8px;">웹 서버 호스팅이 필요합니다</div>
+        <div style="color:#64748b;font-size:13px;line-height:1.6;margin-bottom:20px;">
+          AI 스캔 기능은 외부 API를 호출하기 때문에<br>
+          로컬 파일(content://, file://)에서는 보안상 차단됩니다.<br>
+          <strong>무료로 5분 안에</strong> 해결할 수 있습니다.
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px;">
+
+        <!-- 방법 1: GitHub Pages -->
+        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:14px;">
+          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+            <span style="background:#16a34a;color:#fff;font-size:11px;font-weight:700;padding:2px 8px;border-radius:9999px;">추천</span>
+            <span style="color:#16a34a;font-weight:700;font-size:13px;">GitHub Pages (무료·영구)</span>
+          </div>
+          <ol style="color:#334155;font-size:12px;line-height:2;padding-left:18px;margin:0;">
+            <li>github.com 가입 → 새 저장소(repository) 생성</li>
+            <li>HTML 파일 업로드</li>
+            <li>Settings → Pages → Branch: main → Save</li>
+            <li>발급된 URL로 접속하면 모든 기능 사용 가능</li>
+          </ol>
+        </div>
+
+        <!-- 방법 2: 카카오톡 공유 -->
+        <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:10px;padding:14px;">
+          <div style="color:#1d4ed8;font-weight:700;font-size:13px;margin-bottom:6px;">📱 즉시 테스트하는 법</div>
+          <div style="color:#334155;font-size:12px;line-height:1.8;">
+            Netlify Drop (<span style="color:#1d4ed8;font-weight:600;">netlify.com/drop</span>) 에 파일을 드래그하면<br>
+            즉시 URL이 생성됩니다. (무료, 유효기간 있음)
+          </div>
+        </div>
+
+        <!-- 참고 -->
+        <div style="background:#fefce8;border:1px solid #fef08a;border-radius:10px;padding:12px;">
+          <div style="color:#b45309;font-size:12px;line-height:1.7;">
+            ⚠️ <strong>다른 기능은 영향 없음</strong> — 거래처 관리, 거래 내역, 채권·채무,<br>
+            JSON 저장/불러오기는 로컬 파일에서도 정상 작동합니다.
+          </div>
+        </div>
+      </div>
+
+      <button type="button" onclick="closeScanModal()" style="width:100%;padding:11px 0;background:#d97706;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;">확인</button>`);
+  }
+  if(m.state==='loading'){
+    return modalWrap('AI 영수증 분석','closeScanModal()',480,`
+      <div style="text-align:center;padding:32px 0;">
+        <div style="margin:0 auto 18px;width:52px;height:52px;border:3px solid #e2e8f0;border-top-color:#d97706;border-radius:50%;animation:spin .8s linear infinite;"></div>
+        <div style="color:#0f172a;font-weight:600;margin-bottom:6px;">이미지 분석 중…</div>
+        <div style="color:#94a3b8;font-size:12px;">Claude AI가 거래 정보를 읽고 있습니다</div>
+      </div>
+      <style>@keyframes spin{to{transform:rotate(360deg);}}</style>`);
+  }
+
+  // ── 에러 ──
+  if(m.state==='error'){
+    return modalWrap('AI 영수증 분석','closeScanModal()',480,`
+      <div style="text-align:center;padding:24px 0;">
+        <div style="font-size:36px;margin-bottom:12px;">⚠️</div>
+        <div style="color:#dc2626;font-weight:600;margin-bottom:8px;">분석 실패</div>
+        <div style="color:#64748b;font-size:13px;margin-bottom:20px;">${esc(m.error)}</div>
+        <div style="display:flex;gap:8px;justify-content:center;">
+          <button type="button" onclick="closeScanModal()" style="padding:9px 20px;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:8px;font-size:13px;cursor:pointer;">닫기</button>
+          <button type="button" onclick="openScanInput()" style="padding:9px 20px;background:#d97706;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;">다시 촬영</button>
+        </div>
+      </div>`);
+  }
+
+  // ── 결과 ──
+  const r=m.result||{};
+  const confColor=r.confidence==='high'?'#16a34a':r.confidence==='medium'?'#b45309':'#dc2626';
+  const confLabel=r.confidence==='high'?'높음':r.confidence==='medium'?'보통':'낮음';
+  const total=(+r.amount||0)+(+r.tax||0);
+
+  // 거래처 매칭 시도
+  const matchedClient=r.supplierName
+    ? S.clients.find(c=>c.type==='매입처'&&c.name.includes(r.supplierName?.slice(0,2)))
+    : null;
+
+  const clientOpts=S.clients.map(c=>`<option value="${c.id}" ${(matchedClient?.id===c.id)?'selected':''}>${esc(c.name)} (${esc(c.type)})</option>`).join('');
+
+  return modalWrap('AI 영수증 분석 결과','closeScanModal()',520,`
+    <!-- 이미지 썸네일 + 신뢰도 -->
+    <div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:16px;">
+      <img src="${m.previewUrl}" alt="영수증" style="width:80px;height:80px;object-fit:cover;border-radius:8px;border:1px solid #e2e8f0;flex-shrink:0;">
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
+          <span style="color:#0f172a;font-weight:600;font-size:14px;">분석 완료</span>
+          <span style="background:${confColor}18;border:1px solid ${confColor}40;color:${confColor};font-size:11px;padding:1px 8px;border-radius:9999px;font-weight:600;">신뢰도 ${confLabel}</span>
+        </div>
+        ${r.note?`<div style="color:#64748b;font-size:12px;background:#f8fafc;border-radius:6px;padding:7px 10px;border-left:3px solid #d97706;">${esc(r.note)}</div>`:''}
+        ${total>0?`<div style="color:#1d4ed8;font-size:13px;font-weight:700;margin-top:6px;">합계 ${fmtW(total)}</div>`:''}
+      </div>
+    </div>
+
+    <!-- 추출 결과 편집 폼 -->
+    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:14px;margin-bottom:14px;">
+      <div style="color:#475569;font-size:11px;font-weight:600;margin-bottom:10px;display:flex;align-items:center;gap:5px;">${I.spark} 추출된 정보 (수정 가능)</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <div style="grid-column:1/-1;">
+          <label style="font-size:11px;color:#64748b;">거래처</label>
+          <select id="sc_clientId" style="${ISX}margin-top:3px;font-size:14px;">
+            <option value="">-- 선택 --</option>
+            ${clientOpts}
+          </select>
+          ${r.supplierName?`<div style="color:#94a3b8;font-size:10px;margin-top:3px;">📷 인식된 상호: ${esc(r.supplierName)}</div>`:''}
+        </div>
+        <div>
+          <label style="font-size:11px;color:#64748b;">거래일자</label>
+          <input id="sc_date" type="date" value="${esc(r.date||localDate())}" style="${ISX}margin-top:3px;">
+        </div>
+        <div>
+          <label style="font-size:11px;color:#64748b;">공급가액</label>
+          <input id="sc_amount" type="text" value="${fmt(+r.amount||0)}" oninput="scUpdateTotal()" style="${ISX}margin-top:3px;">
+        </div>
+        <div>
+          <label style="font-size:11px;color:#64748b;">세액</label>
+          <input id="sc_tax" type="text" value="${fmt(+r.tax||0)}" oninput="scUpdateTotal()" style="${ISX}margin-top:3px;">
+        </div>
+        <div style="grid-column:1/-1;">
+          <label style="font-size:11px;color:#64748b;">적요</label>
+          <input id="sc_memo" type="text" value="${esc(r.memo||'')}" placeholder="거래 내용" style="${ISX}margin-top:3px;">
+        </div>
+      </div>
+      <div id="scTotal" style="margin-top:10px;"></div>
+    </div>
+
+    <div style="display:flex;gap:8px;">
+      <button type="button" onclick="openScanInput()" style="padding:10px 14px;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:8px;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:5px;">${I.camera} 재촬영</button>
+      <button type="button" onclick="closeScanModal()" style="flex:1;padding:10px 0;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:8px;font-size:13px;cursor:pointer;">취소</button>
+      <button type="button" onclick="applyScanResult()" style="flex:2;padding:10px 0;background:#d97706;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;">매입 거래로 추가</button>
+    </div>`);
+}
+
+function scUpdateTotal(){
+  const amt=parseInt((document.getElementById('sc_amount')?.value||'').replace(/[^0-9]/g,''))||0;
+  const tax=parseInt((document.getElementById('sc_tax')?.value||'').replace(/[^0-9]/g,''))||0;
+  const el=document.getElementById('scTotal');
+  if(!el)return;
+  if(amt>0||tax>0){
+    el.style.cssText='background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:8px 12px;display:flex;justify-content:space-between;align-items:center;';
+    el.innerHTML=`<span style="color:#1d4ed8;font-size:12px;">합계 금액</span><span style="color:#1d4ed8;font-weight:700;font-size:15px;">${fmtW(amt+tax)}</span>`;
+  }else{el.style.cssText='';el.innerHTML='';}
+}
+
+function applyScanResult(){
+  const clientId=Number(document.getElementById('sc_clientId')?.value);
+  const amtRaw=(document.getElementById('sc_amount')?.value||'').replace(/[^0-9]/g,'');
+  const taxRaw=(document.getElementById('sc_tax')?.value||'').replace(/[^0-9]/g,'');
+  const dateVal=document.getElementById('sc_date')?.value;
+  const memo=document.getElementById('sc_memo')?.value||'';
+
+  if(!clientId){showToast('거래처를 선택하세요.');return;}
+  if(!amtRaw){showToast('금액을 입력하세요.');return;}
+  if(!dateVal){showToast('거래일자를 확인하세요.');return;}
+
+  const tx={
+    date:dateVal,
+    clientId,
+    type:'매입',
+    amount:parseInt(amtRaw)||0,
+    tax:parseInt(taxRaw)||0,
+    memo,
+    status:'미지급금',
+    id:nextId(S.transactions)
+  };
+  S.transactions=[...S.transactions,tx];
+  saveTX();
+  URL.revokeObjectURL(M.scanModal?.previewUrl);
+  M.scanModal=null;
+  S.view='transactions';
+  render();
+  showToast('매입 거래가 추가됐습니다.');
+}
+
+function closeScanModal(){
+  if(M.scanModal?.previewUrl) URL.revokeObjectURL(M.scanModal.previewUrl);
+  M.scanModal=null;
+  renderModals();
+}
+
+// ── EXPORT / IMPORT ───────────────────────────────────────────────────────────
+function exportData(){
+  const data={exportedAt:new Date().toISOString(),version:1,clients:S.clients,transactions:S.transactions};
+  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url;
+  a.download=`crm-data-${localDate()}.json`;
+  a.style.display='none';
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(()=>{document.body.removeChild(a);URL.revokeObjectURL(url);},300);
+  showToast('데이터를 저장했습니다.');
+}
+function importData(){
+  const input=document.createElement('input');
+  input.type='file';input.accept='.json';
+  input.style.display='none';
+  document.body.appendChild(input);
+  input.onchange=e=>{
+    const file=e.target.files[0];
+    document.body.removeChild(input);
+    if(!file)return;
+    const reader=new FileReader();
+    reader.onload=ev=>{
+      try{
+        const data=JSON.parse(ev.target.result);
+        if(!Array.isArray(data.clients)||!Array.isArray(data.transactions)){
+          showToast('올바른 CRM 백업 파일이 아닙니다.');return;
+        }
+        // 데이터 유효성 검증
+        const validC=data.clients.filter(c=>c.id&&c.name&&c.type);
+        const validT=data.transactions.filter(t=>t.id&&t.clientId&&t.date&&t.type&&typeof t.amount==='number');
+        if(!confirm(`거래처 ${validC.length}개, 거래 ${validT.length}건을 불러옵니다.\n현재 데이터는 덮어씌워집니다. 계속할까요?`))return;
+        S.clients=validC;S.transactions=validT;
+        saveC();saveTX();render();showToast('데이터를 불러왔습니다.');
+      }catch(err){showToast('파일을 읽는 중 오류가 발생했습니다.');}
+    };
+    reader.readAsText(file);
+  };
+  // iOS Safari: input이 DOM에 있어야 파일 선택창 열림
+  input.click();
+}
+
+// ── RENDER ────────────────────────────────────────────────────────────────────
+function render(){
+  const fid=document.activeElement?.id;
+  const ss=document.activeElement?.selectionStart;
+  const se=document.activeElement?.selectionEnd;
+
+  let content='';
+  if(S.view==='dashboard')content=buildDashboard();
+  else if(S.view==='clients')content=buildClients();
+  else if(S.view==='transactions')content=buildTransactions();
+  else if(S.view==='receivables')content=buildReceivables();
+
+  document.getElementById('app').innerHTML=`
+    <aside class="sidebar">${sidebarInner()}</aside>
+    <div class="main-col">
+      ${buildMobileHeader()}
+      <main style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;background:#f1f5f9;">
+        <div id="mainContent" class="pad-main" style="max-width:1100px;margin:0 auto;padding:22px 20px;">${content}</div>
+      </main>
+      ${buildBottomNav()}
+    </div>`;
+
+  document.getElementById('modal-root').innerHTML=buildDrawer();
+  renderModals();
+  if(fid){const el=document.getElementById(fid);if(el){el.focus();try{if(ss!=null)el.setSelectionRange(ss,se);}catch{}}}
+}
+
+function renderContent(){
+  const fid=document.activeElement?.id;
+  const ss=document.activeElement?.selectionStart;
+  const se=document.activeElement?.selectionEnd;
+  let html='';
+  if(S.view==='clients')html=buildClients();
+  else if(S.view==='transactions')html=buildTransactions();
+  const mc=document.getElementById('mainContent');if(mc)mc.innerHTML=html;
+  if(fid){const el=document.getElementById(fid);if(el){el.focus();try{if(ss!=null)el.setSelectionRange(ss,se);}catch{}}}
+}
+
+function renderModals(){
+  const root=document.getElementById('modal-root');
+  const drawer=buildDrawer();
+  if(M.confirm)root.innerHTML=drawer+buildConfirm();
+  else if(M.scanModal)root.innerHTML=drawer+buildScanModal();
+  else if(M.clientModal)root.innerHTML=drawer+buildClientModal();
+  else if(M.txModal)root.innerHTML=drawer+buildTxModal();
+  else root.innerHTML=drawer;
+}
+
+// ── HANDLERS ──────────────────────────────────────────────────────────────────
+function setView(v){S.view=v;render();}
+function setCSearch(v){S.cSearch=v;renderContent();}
+function setCFilter(v){S.cFilter=v;render();}
+function toggleExpand(id){S.cExpanded=S.cExpanded===id?null:id;render();}
+function setTxSearch(v){S.txSearch=v;renderContent();}
+function setTxTf(v){S.txTf=v;render();}
+function setTxSf(v){S.txSf=v;render();}
+function openDrawer(){S.drawerOpen=true;renderModals();}
+function closeDrawer(){S.drawerOpen=false;renderModals();}
+
+function openClientModal(x){M.clientModal=x==='add'?'add':S.clients.find(c=>c.id===x);renderModals();}
+function closeClientModal(){M.clientModal=null;renderModals();}
+function editClient(id){openClientModal(id);}
+
+function submitClientModal(existId){
+  const name=document.getElementById('cf_name')?.value?.trim();
+  if(!name){showToast('거래처명을 입력하세요.');return;}
+  const f={name,bizNo:document.getElementById('cf_bizNo')?.value?.trim()||'',rep:document.getElementById('cf_rep')?.value?.trim()||'',phone:document.getElementById('cf_phone')?.value?.trim()||'',email:document.getElementById('cf_email')?.value?.trim()||'',address:document.getElementById('cf_address')?.value?.trim()||'',type:document.getElementById('cf_type')?.value||'매출처',memo:document.getElementById('cf_memo')?.value?.trim()||''};
+  if(existId!==null)f.id=existId;
+  saveClient(f);
+}
+
+function confirmDelClient(id){
+  const c=S.clients.find(x=>x.id===id);
+  M.confirm={msg:`"${c?.name}"을(를) 삭제하시겠습니까?\n관련 거래 내역도 함께 삭제됩니다.`,okStr:`deleteClient(${id})`};
+  M.clientModal=null;renderModals();
+}
+
+function openTxModal(x){M.txModal=x==='add'?'add':S.transactions.find(t=>t.id===x);renderModals();}
+function closeTxModal(){M.txModal=null;renderModals();}
+function editTx(id){openTxModal(id);}
+
+function submitTxModal(existId){
+  const dateVal=document.getElementById('tf_date')?.value;
+  const clientId=Number(document.getElementById('tf_clientId')?.value);
+  const amtRaw=(document.getElementById('tf_amount')?.value||'').replace(/[^0-9]/g,'');
+  const taxRaw=(document.getElementById('tf_tax')?.value||'').replace(/[^0-9]/g,'');
+  if(!dateVal){showToast('거래일자를 입력하세요.');return;}
+  if(!clientId){showToast('거래처를 선택하세요.');return;}
+  if(!amtRaw){showToast('금액을 입력하세요.');return;}
+  const amount=parseInt(amtRaw)||0;
+  const tax=parseInt(taxRaw)||0;
+  if(amount<0||tax<0){showToast('금액은 0 이상이어야 합니다.');return;}
+  const f={date:dateVal,clientId,type:document.getElementById('tf_type')?.value,amount,tax,memo:document.getElementById('tf_memo')?.value||'',status:document.getElementById('tf_status')?.value};
+  if(existId!==null)f.id=existId;
+  saveTxFn(f);
+}
+
+function confirmDelTx(id){
+  M.confirm={msg:'이 거래를 삭제하시겠습니까?',okStr:`deleteTxFn(${id})`};
+  M.txModal=null;renderModals();
+}
+
+function onTxAmt(val){
+  const n=parseInt(val.replace(/[^0-9]/g,''))||0;
+  const tax=Math.round(n*.1);
+  const tf=document.getElementById('tf_tax');if(tf)tf.value=tax?fmt(tax):'';
+  updateTxTotal(n,tax);
+}
+function onTxTax(val){
+  const tax=parseInt(val.replace(/[^0-9]/g,''))||0;
+  const amt=parseInt((document.getElementById('tf_amount')?.value||'').replace(/[^0-9]/g,''))||0;
+  updateTxTotal(amt,tax);
+}
+function updateTxTotal(amt,tax){
+  const el=document.getElementById('txTotal');if(!el)return;
+  if(amt>0){el.style.cssText='background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 14px;margin-top:12px;display:flex;justify-content:space-between;align-items:center;';el.innerHTML=`<span style="color:#16a34a;font-size:12px;">합계 금액 (공급가+세액)</span><span style="color:#16a34a;font-weight:700;font-size:16px;">${fmtW(amt+tax)}</span>`;}
+  else{el.style.cssText='';el.innerHTML='';}
+}
+function onTxType(type){
+  const sel=document.getElementById('tf_status');if(!sel)return;
+  sel.innerHTML=(type==='매출'?['미수금','수금완료']:['미지급금','지급완료']).map(s=>`<option>${esc(s)}</option>`).join('');
+}
+
+// ── SWIPE NAVIGATION ──────────────────────────────────────────────────────────
+(function(){
+  const VIEWS=['dashboard','clients','transactions','receivables'];
+  let tx0=null, ty0=null, startTime=null, swiping=false;
+
+  function onStart(e){
+    // 모달/드로어 열린 경우 무시
+    if(M.clientModal||M.txModal||M.confirm||M.scanModal||S.drawerOpen)return;
+    const t=e.touches?e.touches[0]:e;
+    tx0=t.clientX; ty0=t.clientY; startTime=Date.now(); swiping=true;
+  }
+
+  function onMove(e){
+    if(!swiping||tx0===null)return;
+    const t=e.touches?e.touches[0]:e;
+    const dx=t.clientX-tx0;
+    const dy=t.clientY-ty0;
+    // 세로 스크롤이 우세하면 스와이프 취소
+    if(Math.abs(dy)>Math.abs(dx)&&Math.abs(dy)>10){swiping=false;return;}
+    // 가로 이동 중 세로 스크롤 방지
+    if(Math.abs(dx)>10) e.preventDefault();
+  }
+
+  function onEnd(e){
+    if(!swiping||tx0===null){swiping=false;tx0=null;return;}
+    const t=e.changedTouches?e.changedTouches[0]:e;
+    const dx=t.clientX-tx0;
+    const dy=t.clientY-ty0;
+    const dt=Date.now()-startTime;
+    swiping=false; tx0=null; ty0=null;
+
+    // 조건: 가로 이동이 세로보다 크고, 최소 50px 이상, 400ms 이내
+    if(Math.abs(dx)<50||Math.abs(dx)<Math.abs(dy)||dt>400)return;
+
+    const cur=VIEWS.indexOf(S.view);
+    if(cur===-1)return;
+    const next=dx<0
+      ? (cur+1<VIEWS.length ? VIEWS[cur+1] : null)   // 왼쪽 스와이프 → 다음
+      : (cur-1>=0           ? VIEWS[cur-1] : null);   // 오른쪽 스와이프 → 이전
+    if(!next)return;
+
+    // 슬라이드 애니메이션
+    const mc=document.getElementById('mainContent');
+    if(mc){
+      const dir=dx<0?-1:1;
+      mc.style.transition='none';
+      mc.style.transform=`translateX(0)`;
+      // 살짝 당겼다가 전환
+      mc.style.transition='transform .22s ease';
+      mc.style.transform=`translateX(${dir*60}px)`;
+      mc.style.opacity='0';
+      setTimeout(()=>{
+        setView(next);
+        const mc2=document.getElementById('mainContent');
+        if(mc2){
+          mc2.style.transition='none';
+          mc2.style.transform=`translateX(${-dir*60}px)`;
+          mc2.style.opacity='0';
+          // double rAF: 브라우저가 초기 상태를 실제로 paint한 뒤 애니메이션 시작
+          requestAnimationFrame(()=>requestAnimationFrame(()=>{
+            mc2.style.transition='transform .22s ease, opacity .22s ease';
+            mc2.style.transform='translateX(0)';
+            mc2.style.opacity='1';
+          }));
+        }
+      },150);
+    } else {
+      setView(next);
+    }
+  }
+
+  document.addEventListener('touchstart', onStart, {passive:true});
+  document.addEventListener('touchmove',  onMove,  {passive:false});
+  document.addEventListener('touchend',   onEnd,   {passive:true});
+})();
+
+// ── INIT ──────────────────────────────────────────────────────────────────────
+loadData();
+render();
+</script>
+</body>
+</html>
