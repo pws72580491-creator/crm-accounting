@@ -9,6 +9,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="mobile-web-app-capable" content="yes">
 <title>거래처·회계 관리 시스템</title>
+<!-- Firebase SDK는 JS에서 동적 로딩 (로드 실패해도 앱 동작) -->
 <style>
 /* ── Reset ─────────────────────────────────────────────────────────────── */
 *{box-sizing:border-box;margin:0;padding:0;}
@@ -151,10 +152,33 @@ main{
 </style>
 </head>
 <body>
+<!-- 스크립트 로드 전 즉시 표시되는 스플래시 -->
+<div id="splash" style="position:fixed;top:0;left:0;right:0;bottom:0;background:#f1f5f9;display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999;transition:opacity .3s;">
+  <div style="color:#d97706;font-size:28px;font-weight:700;margin-bottom:8px;">거래처·회계</div>
+  <div style="color:#94a3b8;font-size:13px;margin-bottom:28px;">관리 시스템</div>
+  <div style="width:36px;height:36px;border:3px solid #e2e8f0;border-top-color:#d97706;border-radius:50%;animation:sp .8s linear infinite;"></div>
+  <style>@keyframes sp{to{transform:rotate(360deg);}}</style>
+</div>
+<!-- 5초 안에 앱이 안 뜨면 강제로 스플래시 제거 -->
+<script>
+setTimeout(function(){
+  var sp=document.getElementById('splash');
+  if(sp){sp.style.opacity='0';setTimeout(function(){if(sp.parentNode)sp.parentNode.removeChild(sp);},300);}
+},5000);
+</script>
 <div id="app"></div>
 <div id="modal-root"></div>
 
 <script>
+// ── hideSplash: 최상단 정의 (어디서든 호출 가능) ─────────────────────────────
+function hideSplash(){
+  var sp=document.getElementById('splash');
+  if(!sp)return;
+  sp.style.opacity='0';
+  sp.style.transition='opacity .3s';
+  setTimeout(function(){if(sp&&sp.parentNode)sp.parentNode.removeChild(sp);},350);
+}
+
 // ── Sample Data ───────────────────────────────────────────────────────────────
 const SAMPLE_CLIENTS=[
   {id:1,name:"삼성전자",  bizNo:"124-81-00998",rep:"이재용",phone:"02-2255-0114",email:"contact@samsung.com", address:"서울 강남구 삼성로 129",     type:"매출처",memo:"주요 고객사"},
@@ -231,7 +255,7 @@ const ISX=`background:#fff;border:1px solid #cbd5e1;color:#0f172a;border-radius:
 const FB=`onfocus="this.style.borderColor='#d97706'" onblur="this.style.borderColor='#cbd5e1'"`;
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let S={view:'dashboard',clients:[],transactions:[],cSearch:'',cFilter:'전체',cExpanded:null,txSearch:'',txTf:'전체',txSf:'전체',drawerOpen:false};
+let S={view:'dashboard',clients:[],transactions:[],cSearch:'',cFilter:'전체',cExpanded:null,txSearch:'',txTf:'전체',txSf:'전체',txMonth:thisMonth(),drawerOpen:false};
 let M={clientModal:null,txModal:null,confirm:null,scanModal:null};
 
 // ── Toast (최상단 정의 - saveC/saveTX에서 사용) ───────────────────────────────
@@ -248,20 +272,159 @@ function showToast(msg){
   _toastTimer=setTimeout(()=>{el.style.transform='translateX(-50%) translateY(60px)';el.style.opacity='0';},2400);
 }
 
-// ── Persistence ───────────────────────────────────────────────────────────────
-function loadData(){
-  try{S.clients=JSON.parse(localStorage.getItem('crm_clients'))||SAMPLE_CLIENTS;}catch{S.clients=[...SAMPLE_CLIENTS];}
-  try{S.transactions=JSON.parse(localStorage.getItem('crm_tx'))||SAMPLE_TX;}catch{S.transactions=[...SAMPLE_TX];}
-}
-function saveC(){
-  try{localStorage.setItem('crm_clients',JSON.stringify(S.clients));}
-  catch(e){showToast('저장 실패: 저장 공간이 부족합니다.');}
-}
-function saveTX(){
-  try{localStorage.setItem('crm_tx',JSON.stringify(S.transactions));}
-  catch(e){showToast('저장 실패: 저장 공간이 부족합니다.');}
+// ── Firebase 동적 로딩 + 폴백 ─────────────────────────────────────────────────
+const FB_CFG={
+  apiKey:"AIzaSyBfSu4_0u_7nSEqo9-HQVKINgF_l59YkE8",
+  authDomain:"crm-accounting-d7bd0.firebaseapp.com",
+  projectId:"crm-accounting-d7bd0",
+  storageBucket:"crm-accounting-d7bd0.firebasestorage.app",
+  messagingSenderId:"329588634587",
+  appId:"1:329588634587:web:ebf56826605b7263486dfe",
+  measurementId:"G-H3QX287VM9",
+  databaseURL:"https://crm-accounting-d7bd0-default-rtdb.asia-southeast1.firebasedatabase.app"
+};
+
+let db=null;           // Realtime DB 인스턴스 (null이면 localStorage 전용 모드)
+let DB_ONLINE=false;
+let _fbReady=false;    // Firebase 로드 완료 여부
+
+function updateSyncBadge(){
+  const el=document.getElementById('syncBadge');
+  if(!el)return;
+  if(!_fbReady){
+    el.style.background='#f1f5f9';el.style.borderColor='#e2e8f0';el.style.color='#94a3b8';
+    el.textContent='● 로컬 모드';
+  } else if(DB_ONLINE){
+    el.style.background='#dcfce7';el.style.borderColor='#86efac';el.style.color='#16a34a';
+    el.textContent='● 동기화됨';
+  } else {
+    el.style.background='#fef3c7';el.style.borderColor='#fcd34d';el.style.color='#b45309';
+    el.textContent='● 오프라인';
+  }
 }
 
+// 스크립트 동적 로드 헬퍼
+function loadScript(src){
+  return new Promise((res,rej)=>{
+    const s=document.createElement('script');
+    s.src=src;s.async=true;
+    s.onload=res;s.onerror=rej;
+    document.head.appendChild(s);
+  });
+}
+
+async function initFirebase(){
+  try{
+    await loadScript('https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js');
+    await loadScript('https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js');
+    if(!firebase.apps.length) firebase.initializeApp(FB_CFG);
+    db=firebase.database();
+    _fbReady=true;
+    // 연결 상태 실시간 감지
+    db.ref('.info/connected').on('value',snap=>{
+      DB_ONLINE=!!snap.val();
+      updateSyncBadge();
+    });
+  }catch(e){
+    console.warn('Firebase SDK 로드 실패 → 로컬 모드로 동작:', e.message);
+    db=null; _fbReady=false;
+    updateSyncBadge();
+  }
+}
+
+// ── Persistence (Realtime DB + localStorage 캐시) ─────────────────────────────
+function lsGet(key,def){try{return JSON.parse(localStorage.getItem(key))||def;}catch{return def;}}
+function lsSet(key,val){try{localStorage.setItem(key,JSON.stringify(val));}catch(e){}}
+
+const toMap=arr=>arr.reduce((m,o)=>{m[o.id]=o;return m;},{});
+const toArr=map=>Object.values(map||{}).sort((a,b)=>a.id-b.id);
+
+async function loadData(){
+  // 1) 로컬 캐시 즉시 렌더 — 반드시 스플래시 제거
+  S.clients     =lsGet('crm_clients',SAMPLE_CLIENTS);
+  S.transactions=lsGet('crm_tx',SAMPLE_TX);
+  try{ render(); }catch(e){ console.error('render 오류:',e); }
+  finally{ hideSplash(); }
+
+  // 2) Firebase 초기화 시도
+  await initFirebase();
+  updateSyncBadge();
+
+  if(!db){
+    // Firebase 없음 → 로컬 전용 모드로 완료
+    showToast('📴 오프라인 모드 (로컬 저장)');
+    return;
+  }
+
+  // 3) RTDB 최신 데이터 로드
+  try{
+    const [csSnap,txSnap]=await Promise.all([
+      db.ref('clients').get(),
+      db.ref('transactions').get(),
+    ]);
+    const csVal=csSnap.val();
+    const txVal=txSnap.val();
+    if(csVal||txVal){
+      S.clients     =toArr(csVal);
+      S.transactions=toArr(txVal);
+      lsSet('crm_clients',S.clients);
+      lsSet('crm_tx',S.transactions);
+      render();
+    } else {
+      await _uploadAll();
+    }
+  }catch(e){
+    console.warn('RTDB 로드 실패, 로컬 캐시 사용:',e.message);
+  }
+
+  // 4) 실시간 리스너
+  _attachListeners();
+}
+
+let _offC=null,_offTX=null;
+function _attachListeners(){
+  if(!db)return;
+  if(_offC){db.ref('clients').off('value',_offC);}
+  if(_offTX){db.ref('transactions').off('value',_offTX);}
+
+  _offC=db.ref('clients').on('value',snap=>{
+    const arr=toArr(snap.val());
+    if(JSON.stringify(arr)===JSON.stringify(S.clients))return;
+    S.clients=arr;lsSet('crm_clients',S.clients);render();
+  },e=>console.warn('clients 리스너:',e));
+
+  _offTX=db.ref('transactions').on('value',snap=>{
+    const arr=toArr(snap.val());
+    if(JSON.stringify(arr)===JSON.stringify(S.transactions))return;
+    S.transactions=arr;lsSet('crm_tx',S.transactions);render();
+  },e=>console.warn('transactions 리스너:',e));
+}
+
+async function _uploadAll(){
+  if(!db)return;
+  await Promise.all([
+    db.ref('clients').set(toMap(S.clients)),
+    db.ref('transactions').set(toMap(S.transactions)),
+  ]);
+}
+
+async function saveC(){
+  lsSet('crm_clients',S.clients);
+  if(!db)return;
+  try{ await db.ref('clients').set(toMap(S.clients)); }
+  catch(e){ showToast('⚠️ 클라우드 저장 실패 (로컬 저장됨)'); console.warn('saveC:',e); }
+}
+async function saveTX(){
+  lsSet('crm_tx',S.transactions);
+  if(!db)return;
+  try{ await db.ref('transactions').set(toMap(S.transactions)); }
+  catch(e){ showToast('⚠️ 클라우드 저장 실패 (로컬 저장됨)'); console.warn('saveTX:',e); }
+}
+async function _deleteDoc(col,id){
+  if(!db)return;
+  try{ await db.ref(`${col}/${id}`).remove(); }
+  catch(e){ console.warn('_deleteDoc:',e); }
+}
 // ── CRUD ──────────────────────────────────────────────────────────────────────
 function saveClient(f){
   if(f.id)S.clients=S.clients.map(c=>c.id===f.id?f:c);
@@ -269,9 +432,13 @@ function saveClient(f){
   saveC();M.clientModal=null;render();
 }
 function deleteClient(id){
+  // 원본에서 연관 tx id 추출 후 삭제 (필터 전에 먼저 수행)
+  const allOldTx=lsGet('crm_tx',[]);
+  allOldTx.filter(t=>t.clientId===id).forEach(t=>_deleteDoc('transactions',t.id));
   S.clients=S.clients.filter(c=>c.id!==id);
   S.transactions=S.transactions.filter(t=>t.clientId!==id);
   if(S.cExpanded===id)S.cExpanded=null;
+  _deleteDoc('clients',id);
   saveC();saveTX();M.confirm=null;render();
 }
 function saveTxFn(f){
@@ -279,7 +446,11 @@ function saveTxFn(f){
   else S.transactions=[...S.transactions,{...f,id:nextId(S.transactions)}];
   saveTX();M.txModal=null;render();
 }
-function deleteTxFn(id){S.transactions=S.transactions.filter(t=>t.id!==id);saveTX();M.confirm=null;render();}
+function deleteTxFn(id){
+  _deleteDoc('transactions',id);
+  S.transactions=S.transactions.filter(t=>t.id!==id);
+  saveTX();M.confirm=null;render();
+}
 function toggleStatus(txId){
   const next={미수금:'수금완료',수금완료:'미수금',미지급금:'지급완료',지급완료:'미지급금'};
   S.transactions=S.transactions.map(t=>t.id===txId?{...t,status:next[t.status]||t.status}:t);
@@ -322,6 +493,7 @@ function sidebarInner(onClose=''){
         ${I.upload} JSON 불러오기
       </button>
       <div style="text-align:center;color:#cbd5e1;font-size:10px;padding-top:2px;">거래처 ${S.clients.length}개 · ${S.transactions.length}건</div>
+      <div id="syncBadge" style="margin-top:6px;text-align:center;font-size:10px;font-weight:600;padding:3px 0;border-radius:6px;border:1px solid #e2e8f0;background:#f1f5f9;color:#94a3b8;">● 연결 중...</div>
     </div>`;
 }
 
@@ -368,23 +540,28 @@ function buildDrawer(){
 
 // ── DASHBOARD ─────────────────────────────────────────────────────────────────
 function buildDashboard(){
-  const mon=thisMonth();
+  const mon=S.txMonth;
+  const cur=thisMonth();
+  const canNext=mon<cur;
   const monT=S.transactions.filter(t=>t.date.startsWith(mon));
   const rev=monT.filter(t=>t.type==='매출').reduce((s,t)=>s+t.amount,0);
   const pur=monT.filter(t=>t.type==='매입').reduce((s,t)=>s+t.amount,0);
+  const pl=rev-pur;
+  const plColor=pl>=0?'#16a34a':'#dc2626';
   const rcv=S.transactions.filter(t=>t.status==='미수금').reduce((s,t)=>s+t.amount+t.tax,0);
   const pay=S.transactions.filter(t=>t.status==='미지급금').reduce((s,t)=>s+t.amount+t.tax,0);
-  const recent=[...S.transactions].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,6);
+  const recent=[...S.transactions].filter(t=>t.date.startsWith(mon)).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,6);
   const clientRev={};
-  S.transactions.filter(t=>t.type==='매출').forEach(t=>{clientRev[t.clientId]=(clientRev[t.clientId]||0)+t.amount;});
+  S.transactions.filter(t=>t.type==='매출'&&t.date.startsWith(mon)).forEach(t=>{clientRev[t.clientId]=(clientRev[t.clientId]||0)+t.amount;});
   const top=Object.entries(clientRev).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([id,v])=>({c:S.clients.find(x=>x.id===+id),v}));
   const maxV=top[0]?.v||1;
 
   const statCards=[
-    {label:'이번달 매출',val:fmtW(rev),sub:`${monT.filter(t=>t.type==='매출').length}건`,color:'#16a34a',bg:'#f0fdf4',bd:'#bbf7d0'},
-    {label:'이번달 매입',val:fmtW(pur),sub:`${monT.filter(t=>t.type==='매입').length}건`,color:'#dc2626',bg:'#fff1f2',bd:'#fecdd3'},
-    {label:'미수금',val:fmtW(rcv),sub:'수금 대기',color:'#b45309',bg:'#fefce8',bd:'#fef08a'},
-    {label:'미지급금',val:fmtW(pay),sub:'지급 대기',color:'#1d4ed8',bg:'#eff6ff',bd:'#bfdbfe'},
+    {label:'매출',val:fmtW(rev),sub:`${monT.filter(t=>t.type==='매출').length}건`,color:'#16a34a',bg:'#f0fdf4',bd:'#bbf7d0'},
+    {label:'매입',val:fmtW(pur),sub:`${monT.filter(t=>t.type==='매입').length}건`,color:'#dc2626',bg:'#fff1f2',bd:'#fecdd3'},
+    {label:'손익',val:fmtW(pl),sub:pl>=0?'흑자':'적자',color:plColor,bg:'#f8fafc',bd:'#e2e8f0'},
+    {label:'미수금 (전체)',val:fmtW(rcv),sub:'수금 대기',color:'#b45309',bg:'#fefce8',bd:'#fef08a'},
+    {label:'미지급금 (전체)',val:fmtW(pay),sub:'지급 대기',color:'#1d4ed8',bg:'#eff6ff',bd:'#bfdbfe'},
   ].map(({label,val,sub,color,bg,bd})=>`
     <div style="background:${bg};border:1px solid ${bd};border-radius:12px;padding:16px;">
       <div style="color:#64748b;font-size:11px;margin-bottom:6px;">${esc(label)}</div>
@@ -432,17 +609,28 @@ function buildDashboard(){
     </div>`).join('');
 
   const dateStr=new Date().toLocaleDateString('ko-KR',{year:'numeric',month:'long',day:'numeric',weekday:'long'});
+  const monthNav=`<div style="display:flex;align-items:center;gap:6px;">
+    <button onclick="setTxMonth('${prevMonth(mon)}')" style="width:28px;height:28px;border-radius:7px;border:1px solid #e2e8f0;background:#f8fafc;cursor:pointer;font-size:15px;color:#64748b;">‹</button>
+    <select onchange="setTxMonth(this.value)" style="border:1px solid #e2e8f0;border-radius:8px;padding:4px 8px;font-size:12px;color:#0f172a;background:#fff;cursor:pointer;">
+      ${monthOptions().map(m=>`<option value="${m}"${m===mon?' selected':''}>${fmtMonth(m)}</option>`).join('')}
+    </select>
+    <button onclick="setTxMonth('${nextMonth(mon)}')" ${canNext?'':'disabled'} style="width:28px;height:28px;border-radius:7px;border:1px solid #e2e8f0;background:${canNext?'#f8fafc':'#f1f5f9'};cursor:${canNext?'pointer':'default'};font-size:15px;color:${canNext?'#64748b':'#cbd5e1'};">›</button>
+    ${mon!==cur?`<button onclick="setTxMonth('${cur}')" style="padding:4px 9px;border-radius:7px;border:1px solid #d97706;background:#fef3c7;color:#d97706;font-size:11px;font-weight:600;cursor:pointer;">이번달</button>`:''}
+  </div>`;
   return `
     <div style="display:flex;flex-direction:column;gap:18px;">
-      <div>
-        <h1 class="page-title" style="color:#0f172a;font-size:20px;font-weight:700;">대시보드</h1>
-        <p style="color:#64748b;font-size:12px;margin-top:3px;">${esc(dateStr)}</p>
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+        <div>
+          <h1 class="page-title" style="color:#0f172a;font-size:20px;font-weight:700;">대시보드</h1>
+          <p style="color:#64748b;font-size:12px;margin-top:3px;">${esc(dateStr)}</p>
+        </div>
+        ${monthNav}
       </div>
       <div class="g4">${statCards}</div>
       <div class="dash-layout">
         <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:16px;">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-            <span style="color:#0f172a;font-weight:600;font-size:14px;">최근 거래</span>
+            <span style="color:#0f172a;font-weight:600;font-size:14px;">최근 거래 (${fmtMonth(mon)})</span>
             <button onclick="setView('transactions')" style="color:#d97706;font-size:12px;background:none;border:none;cursor:pointer;">전체보기 →</button>
           </div>
           ${recentRows||'<div style="padding:20px 0;text-align:center;color:#94a3b8;font-size:13px;">거래 없음</div>'}
@@ -555,9 +743,13 @@ function buildClients(){
 
 // ── TRANSACTIONS VIEW ─────────────────────────────────────────────────────────
 function buildTransactions(){
+  const mon=S.txMonth;
+  const cur=thisMonth();
+  const canNext=mon<cur&&mon!=='전체';
   const filtered=[...S.transactions].filter(t=>{
     const cl=S.clients.find(c=>c.id===t.clientId);
-    return(S.txTf==='전체'||t.type===S.txTf)&&(S.txSf==='전체'||t.status===S.txSf)&&matchAny(S.txSearch,cl?.name,t.memo);
+    const monthOk=mon==='전체'||t.date.startsWith(mon);
+    return monthOk&&(S.txTf==='전체'||t.type===S.txTf)&&(S.txSf==='전체'||t.status===S.txSf)&&matchAny(S.txSearch,cl?.name,t.memo);
   }).sort((a,b)=>b.date.localeCompare(a.date));
 
   const sumRev=filtered.filter(t=>t.type==='매출').reduce((s,t)=>s+t.amount,0);
@@ -600,10 +792,19 @@ function buildTransactions(){
 
   return `
     <div style="display:flex;flex-direction:column;gap:16px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;">
         <div>
           <h1 class="page-title" style="color:#0f172a;font-size:20px;font-weight:700;">거래 내역</h1>
-          <p style="color:#64748b;font-size:12px;margin-top:2px;">총 ${S.transactions.length}건</p>
+          <p style="color:#64748b;font-size:12px;margin-top:2px;">${mon==='전체'?'전체':fmtMonth(mon)} · ${filtered.length}건</p>
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;">
+          ${mon!=='전체'?`<button onclick="setTxMonth('${prevMonth(mon)}')" style="width:28px;height:28px;border-radius:7px;border:1px solid #e2e8f0;background:#f8fafc;cursor:pointer;font-size:15px;color:#64748b;">‹</button>`:''}
+          <select onchange="setTxMonth(this.value)" style="border:1px solid #e2e8f0;border-radius:8px;padding:4px 8px;font-size:12px;color:#0f172a;background:#fff;cursor:pointer;">
+            <option value="전체"${mon==='전체'?' selected':''}>전체 기간</option>
+            ${monthOptions().map(m=>`<option value="${m}"${m===mon?' selected':''}>${fmtMonth(m)}</option>`).join('')}
+          </select>
+          ${mon!=='전체'&&canNext?`<button onclick="setTxMonth('${nextMonth(mon)}')" style="width:28px;height:28px;border-radius:7px;border:1px solid #e2e8f0;background:#f8fafc;cursor:pointer;font-size:15px;color:#64748b;">›</button>`:''}
+          ${mon!=='전체'&&mon!==cur?`<button onclick="setTxMonth('${cur}')" style="padding:4px 9px;border-radius:7px;border:1px solid #d97706;background:#fef3c7;color:#d97706;font-size:11px;font-weight:600;cursor:pointer;">이번달</button>`:''}
         </div>
         <button onclick="openTxModal('add')" style="display:flex;align-items:center;gap:5px;background:#d97706;color:#fff;border:none;border-radius:8px;padding:8px 12px;font-size:13px;font-weight:700;cursor:pointer;flex-shrink:0;">${I.plus} <span class="hide-sm">거래</span> 추가</button>
         <button onclick="openScanInput()" style="display:flex;align-items:center;gap:5px;background:#1d4ed8;color:#fff;border:none;border-radius:8px;padding:8px 12px;font-size:13px;font-weight:600;cursor:pointer;flex-shrink:0;" title="영수증 촬영으로 매입 자동 추가">${I.camera} <span class="hide-sm">영수증</span> 스캔</button>
@@ -1026,7 +1227,7 @@ function scUpdateTotal(){
   }else{el.style.cssText='';el.innerHTML='';}
 }
 
-function applyScanResult(){
+async function applyScanResult(){
   const clientId=Number(document.getElementById('sc_clientId')?.value);
   const amtRaw=(document.getElementById('sc_amount')?.value||'').replace(/[^0-9]/g,'');
   const taxRaw=(document.getElementById('sc_tax')?.value||'').replace(/[^0-9]/g,'');
@@ -1086,7 +1287,7 @@ function importData(){
     document.body.removeChild(input);
     if(!file)return;
     const reader=new FileReader();
-    reader.onload=ev=>{
+    reader.onload=async ev=>{
       try{
         const data=JSON.parse(ev.target.result);
         if(!Array.isArray(data.clients)||!Array.isArray(data.transactions)){
@@ -1097,7 +1298,9 @@ function importData(){
         const validT=data.transactions.filter(t=>t.id&&t.clientId&&t.date&&t.type&&typeof t.amount==='number');
         if(!confirm(`거래처 ${validC.length}개, 거래 ${validT.length}건을 불러옵니다.\n현재 데이터는 덮어씌워집니다. 계속할까요?`))return;
         S.clients=validC;S.transactions=validT;
-        saveC();saveTX();render();showToast('데이터를 불러왔습니다.');
+        // Firestore 전체 동기화
+        await saveC();await saveTX();
+        render();showToast('데이터를 불러왔습니다.');
       }catch(err){showToast('파일을 읽는 중 오류가 발생했습니다.');}
     };
     reader.readAsText(file);
@@ -1162,6 +1365,16 @@ function toggleExpand(id){S.cExpanded=S.cExpanded===id?null:id;render();}
 function setTxSearch(v){S.txSearch=v;renderContent();}
 function setTxTf(v){S.txTf=v;render();}
 function setTxSf(v){S.txSf=v;render();}
+function setTxMonth(v){S.txMonth=v;render();}
+function prevMonth(ym){const[y,m]=ym.split('-').map(Number);return m===1?`${y-1}-12`:`${y}-${String(m-1).padStart(2,'0')}`;}
+function nextMonth(ym){const[y,m]=ym.split('-').map(Number);return m===12?`${y+1}-01`:`${y}-${String(m+1).padStart(2,'0')}`;}
+function fmtMonth(ym){const[y,m]=ym.split('-');return`${y}년 ${+m}월`;}
+function monthOptions(){
+  const cur=thisMonth();const months=new Set([cur]);
+  S.transactions.forEach(t=>{if(t.date)months.add(t.date.slice(0,7));});
+  const sorted=[...months].sort();const min=sorted[0]||cur;const list=[];
+  let m=min;while(m<=cur){list.push(m);m=nextMonth(m);}return list;
+}
 function openDrawer(){S.drawerOpen=true;renderModals();}
 function closeDrawer(){S.drawerOpen=false;renderModals();}
 
@@ -1306,8 +1519,18 @@ function onTxType(type){
 })();
 
 // ── INIT ──────────────────────────────────────────────────────────────────────
-loadData();
-render();
+// 전역 에러 캐치: 스크립트 오류 시 스플래시 제거 후 에러 표시
+window.onerror=function(msg,src,line){
+  hideSplash();
+  document.getElementById('app').innerHTML=
+    `<div style="padding:40px 24px;text-align:center;color:#dc2626;">
+      <div style="font-size:32px;margin-bottom:12px;">⚠️</div>
+      <div style="font-weight:700;margin-bottom:8px;">앱 오류</div>
+      <div style="font-size:12px;color:#64748b;">${msg}</div>
+    </div>`;
+  return false;
+};
+(async()=>{ await loadData(); setTimeout(updateSyncBadge,1000); })();
 </script>
 </body>
 </html>
