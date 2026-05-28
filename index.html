@@ -241,13 +241,23 @@ const I={
 };
 
 // ── Status ────────────────────────────────────────────────────────────────────
+// 거래 잔여금 계산
+const _txRemain = t => (t.amount + t.tax) - (t.paidAmount || 0);
+const _txIsPending = t => t.status === '미수금' || t.status === '미지급금';
+
 const STATUS_CFG={수금완료:{bg:'#dcfce7',bd:'#86efac',tx:'#16a34a'},지급완료:{bg:'#dbeafe',bd:'#93c5fd',tx:'#1d4ed8'},미수금:{bg:'#fef3c7',bd:'#fcd34d',tx:'#b45309'},미지급금:{bg:'#fee2e2',bd:'#fca5a5',tx:'#dc2626'}};
 function statusBadge(status,txId){
-  const c=STATUS_CFG[status]||{bg:'#f1f5f9',bd:'#cbd5e1',tx:'#64748b'};
-  const click=txId!=null
-    ?`onclick="toggleStatus(${txId})" style="background:${c.bg};border:1px solid ${c.bd};color:${c.tx};cursor:pointer;font-size:11px;padding:2px 8px;border-radius:9999px;font-weight:600;user-select:none;white-space:nowrap;"`
-    :`style="background:${c.bg};border:1px solid ${c.bd};color:${c.tx};cursor:default;font-size:11px;padding:2px 8px;border-radius:9999px;font-weight:600;user-select:none;white-space:nowrap;"`;
-  return `<span ${click}>${esc(status)}</span>`;
+  const partial = txId != null && (()=>{const t=S.transactions.find(x=>x.id===txId); return t&&(t.paidAmount||0)>0&&_txIsPending(t);})();
+  const c = partial
+    ? {bg:'#eff6ff',bd:'#93c5fd',tx:'#1d4ed8'}
+    : STATUS_CFG[status]||{bg:'#f1f5f9',bd:'#cbd5e1',tx:'#64748b'};
+  const label = partial ? '💳 부분' : esc(status);
+  if(txId!=null){
+    if(status==='미수금'||status==='미지급금')
+      return `<span onclick="openQuickPay(${txId})" style="background:${c.bg};border:1px solid ${c.bd};color:${c.tx};cursor:pointer;font-size:11px;padding:2px 8px;border-radius:9999px;font-weight:600;user-select:none;white-space:nowrap;">${label}</span>`;
+    return `<span onclick="toggleStatus(${txId})" style="background:${c.bg};border:1px solid ${c.bd};color:${c.tx};cursor:pointer;font-size:11px;padding:2px 8px;border-radius:9999px;font-weight:600;user-select:none;white-space:nowrap;">${label}</span>`;
+  }
+  return `<span style="background:${c.bg};border:1px solid ${c.bd};color:${c.tx};cursor:default;font-size:11px;padding:2px 8px;border-radius:9999px;font-weight:600;user-select:none;white-space:nowrap;">${label}</span>`;
 }
 
 // ── Input style ───────────────────────────────────────────────────────────────
@@ -256,7 +266,7 @@ const FB=`onfocus="this.style.borderColor='#d97706'" onblur="this.style.borderCo
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let S={view:'dashboard',clients:[],transactions:[],cSearch:'',cFilter:'전체',cExpanded:null,txSearch:'',txTf:'전체',txSf:'전체',txMonth:thisMonth(),drawerOpen:false};
-let M={clientModal:null,txModal:null,confirm:null,scanModal:null,syncModal:null};
+let M={clientModal:null,txModal:null,confirm:null,scanModal:null,syncModal:null,qpModal:null,batchPayModal:null};
 
 // ── Toast (최상단 정의 - saveC/saveTX에서 사용) ───────────────────────────────
 let _toastTimer=null;
@@ -839,50 +849,98 @@ function buildTransactions(){
         </div>
         ${filtered.length===0?'<div style="padding:40px 0;text-align:center;color:#94a3b8;font-size:13px;">거래 내역이 없습니다.</div>':rows}
       </div>
-      <p style="color:#cbd5e1;font-size:11px;text-align:center;">상태 배지를 클릭하면 완료 처리됩니다.</p>
+      <p style="color:#cbd5e1;font-size:11px;text-align:center;">미수금·미지급금 배지를 클릭하면 결제 처리 모달이 열립니다.</p>
     </div>`;
 }
 
 // ── RECEIVABLES VIEW ──────────────────────────────────────────────────────────
 function buildReceivables(){
-  const rec=S.transactions.filter(t=>t.status==='미수금');
+  const rec=S.transactions.filter(t=>t.status==='미수금'||(t.status==='미수금'&&(t.paidAmount||0)>0));
   const pay=S.transactions.filter(t=>t.status==='미지급금');
-  const totalRec=rec.reduce((s,t)=>s+t.amount+t.tax,0);
-  const totalPay=pay.reduce((s,t)=>s+t.amount+t.tax,0);
+  const totalRec=rec.reduce((s,t)=>s+_txRemain(t),0);
+  const totalPay=pay.reduce((s,t)=>s+_txRemain(t),0);
 
-  function section(title,items,color,bg,bd,btnColor,btnBd,sv){
-    const rows=[...items].sort((a,b)=>a.date.localeCompare(b.date)).map(tx=>{
-      const cl=S.clients.find(c=>c.id===tx.clientId);
-      const days=Math.floor((new Date()-new Date(tx.date))/86400000);
-      const uc=days>30?'#dc2626':days>7?'#b45309':'#94a3b8';
-      const ucBg=days>30?'#fee2e2':days>7?'#fef3c7':'#f1f5f9';
-      return `
-        <div style="display:flex;align-items:center;gap:10px;padding:13px 16px;border-bottom:1px solid #f1f5f9;flex-wrap:wrap;">
-          <div style="flex:1;min-width:140px;">
-            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:2px;">
-              <span style="color:#0f172a;font-weight:500;font-size:13px;">${esc(cl?.name||'?')}</span>
-              <span style="color:${uc};font-size:11px;background:${ucBg};padding:1px 6px;border-radius:4px;">${days}일 경과</span>
+  // 거래처별 그룹화
+  function groupByClient(items){
+    const map={};
+    items.forEach(t=>{
+      const key=t.clientId;
+      if(!map[key]) map[key]={clientId:key,txs:[]};
+      map[key].txs.push(t);
+    });
+    return Object.values(map).sort((a,b)=>{
+      const ra=a.txs.reduce((s,t)=>s+_txRemain(t),0);
+      const rb=b.txs.reduce((s,t)=>s+_txRemain(t),0);
+      return rb-ra;
+    });
+  }
+
+  function section(title,items,color,bg,bd,doneStatus,isSales){
+    const groups=groupByClient(items);
+    if(groups.length===0) return `
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+        <div style="padding:13px 16px;background:${bg};border-bottom:1px solid ${bd};">
+          <h3 style="color:${color};font-weight:600;font-size:14px;">${esc(title)}</h3>
+        </div>
+        <div style="padding:28px 0;text-align:center;color:#94a3b8;font-size:13px;">없음</div>
+      </div>`;
+
+    const groupRows=groups.map(g=>{
+      const cl=S.clients.find(c=>c.id===g.clientId);
+      const groupRemain=g.txs.reduce((s,t)=>s+_txRemain(t),0);
+      const txRows=g.txs.sort((a,b)=>a.date.localeCompare(b.date)).map(tx=>{
+        const days=Math.floor((new Date()-new Date(tx.date))/86400000);
+        const uc=days>30?'#dc2626':days>7?'#b45309':'#94a3b8';
+        const ucBg=days>30?'#fee2e2':days>7?'#fef3c7':'#f1f5f9';
+        const partial=(tx.paidAmount||0)>0;
+        return `
+          <div style="display:flex;align-items:center;gap:8px;padding:9px 16px 9px 32px;border-bottom:1px solid #f8fafc;">
+            <div style="flex:1;min-width:0;">
+              <div style="display:flex;align-items:center;gap:5px;">
+                <span style="color:#64748b;font-size:12px;">${esc(tx.date)}</span>
+                <span style="color:${uc};font-size:10px;background:${ucBg};padding:1px 5px;border-radius:4px;">${days}일</span>
+                ${partial?`<span style="font-size:10px;background:#eff6ff;color:#1d4ed8;padding:1px 5px;border-radius:4px;">💳 부분</span>`:''}
+              </div>
+              <div style="color:#94a3b8;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(tx.memo||'-')}</div>
             </div>
-            <div style="color:#94a3b8;font-size:11px;">${esc(tx.memo||'-')} · ${esc(tx.date)}</div>
+            <div style="text-align:right;flex-shrink:0;">
+              <div style="color:${color};font-weight:600;font-size:12px;">${fmtW(_txRemain(tx))}</div>
+              ${partial?`<div style="color:#94a3b8;font-size:10px;">청구 ${fmtW(tx.amount+tx.tax)}</div>`:''}
+            </div>
+            <button onclick="openQuickPay(${tx.id})"
+              style="padding:5px 9px;background:#f0fdf420;border:1px solid #86efac;color:#16a34a;border-radius:7px;font-size:11px;cursor:pointer;white-space:nowrap;font-weight:600;">
+              ${I.check} 수금
+            </button>
+          </div>`;
+      }).join('');
+
+      return `
+        <div style="border-bottom:1px solid #f1f5f9;">
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;background:#fafafa;">
+            <div>
+              <span style="font-weight:700;color:#0f172a;font-size:13px;">${esc(cl?.name||'?')}</span>
+              <span style="color:#94a3b8;font-size:11px;margin-left:6px;">${g.txs.length}건</span>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+              <span style="color:${color};font-weight:700;font-size:14px;">${fmtW(groupRemain)}</span>
+              ${isSales&&g.txs.length>1?`<button onclick="openBatchPay(${g.clientId})"
+                style="padding:5px 10px;border:none;background:${color};color:#fff;border-radius:7px;font-size:11px;cursor:pointer;font-weight:600;">
+                💰 일괄수금
+              </button>`:''}
+            </div>
           </div>
-          <div style="text-align:right;">
-            <div style="color:${color};font-weight:700;font-size:14px;">${fmtW(tx.amount+tx.tax)}</div>
-            <div style="color:#94a3b8;font-size:10px;">공급가 ${fmtW(tx.amount)}+세액 ${fmtW(tx.tax)}</div>
-          </div>
-          <button onclick="completeStatus(${tx.id},'${sv}')"
-            style="display:flex;align-items:center;gap:4px;padding:7px 11px;background:${btnBd}20;border:1px solid ${btnBd};color:${btnColor};border-radius:8px;font-size:12px;cursor:pointer;white-space:nowrap;font-weight:600;">
-            ${I.check} 완료처리
-          </button>
+          ${txRows}
         </div>`;
     }).join('');
-    const total=fmtW(items.reduce((s,t)=>s+t.amount+t.tax,0));
+
+    const sectionTotal=fmtW(items.reduce((s,t)=>s+_txRemain(t),0));
     return `
       <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
         <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;background:${bg};border-bottom:1px solid ${bd};">
           <h3 style="color:${color};font-weight:600;font-size:14px;">${esc(title)}</h3>
-          <span style="color:${color};font-weight:700;font-size:16px;">${total}</span>
+          <span style="color:${color};font-weight:700;font-size:16px;">${sectionTotal}</span>
         </div>
-        ${items.length===0?'<div style="padding:28px 0;text-align:center;color:#94a3b8;font-size:13px;">없음</div>':rows}
+        ${groupRows}
       </div>`;
   }
 
@@ -904,8 +962,8 @@ function buildReceivables(){
           <div style="color:#ef4444;font-size:11px;margin-top:3px;opacity:.75;">${pay.length}건 미지급금</div>
         </div>
       </div>
-      ${section('미수금 (받을 돈)',rec,'#b45309','#fefce8','#fcd34d','#16a34a','#86efac','수금완료')}
-      ${section('미지급금 (줄 돈)',pay,'#dc2626','#fff1f2','#fecdd3','#1d4ed8','#93c5fd','지급완료')}
+      ${section('미수금 (받을 돈)',rec,'#b45309','#fefce8','#fcd34d','수금완료',true)}
+      ${section('미지급금 (줄 돈)',pay,'#dc2626','#fff1f2','#fecdd3','지급완료',false)}
     </div>`;
 }
 
@@ -1590,6 +1648,301 @@ async function doSyncFromDelivery(){
   }
 }
 
+// ── 결제 수단 탭 헬퍼 ─────────────────────────────────────────────────────────
+function _methodTab(cur,key,label,color){
+  const a=cur===key;
+  return `<button onclick="M.qpModal?M.qpModal.method='${key}':M.batchPayModal.method='${key}';renderModals()"
+    style="flex:1;padding:8px 0;border-radius:8px;border:1px solid ${a?color:'#e2e8f0'};background:${a?color+'20':'#f8fafc'};color:${a?color:'#64748b'};font-size:12px;font-weight:${a?700:400};cursor:pointer;">${label}</button>`;
+}
+function _methodTabs(cur){
+  return `<div style="display:flex;gap:6px;">
+    ${_methodTab(cur,'cash','💵 현금','#16a34a')}
+    ${_methodTab(cur,'transfer','🏦 계좌이체','#1d4ed8')}
+    ${_methodTab(cur,'mixed','🔀 혼합','#7c3aed')}
+  </div>`;
+}
+function _mixedInputs(m,prefix){
+  if(m!=='mixed') return '';
+  const mo=M.qpModal||M.batchPayModal;
+  return `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">
+      <div>
+        <div style="font-size:11px;color:#64748b;margin-bottom:4px;">💵 현금</div>
+        <input type="number" value="${mo[prefix+'Cash']||''}" placeholder="0"
+          style="${ISX}font-size:13px;" ${FB}
+          oninput="(M.qpModal||M.batchPayModal)['${prefix}Cash']=Number(this.value)||0;_syncMixedTotal('${prefix}')">
+      </div>
+      <div>
+        <div style="font-size:11px;color:#64748b;margin-bottom:4px;">🏦 계좌이체</div>
+        <input type="number" value="${mo[prefix+'Transfer']||''}" placeholder="0"
+          style="${ISX}font-size:13px;" ${FB}
+          oninput="(M.qpModal||M.batchPayModal)['${prefix}Transfer']=Number(this.value)||0;_syncMixedTotal('${prefix}')">
+      </div>
+    </div>`;
+}
+function _syncMixedTotal(prefix){
+  const mo=M.qpModal||M.batchPayModal;
+  const total=(mo[prefix+'Cash']||0)+(mo[prefix+'Transfer']||0);
+  mo.amount=total;
+  // 미리보기만 갱신 (전체 리렌더 없이)
+  const el=document.getElementById('qp_preview')||document.getElementById('bp_preview');
+  if(el) _updatePayPreview(prefix);
+}
+function _updatePayPreview(prefix){
+  const mo=M.qpModal||M.batchPayModal;
+  if(M.qpModal){
+    const t=S.transactions.find(x=>x.id===mo.txId);
+    if(!t) return;
+    const remain=_txRemain(t);
+    const amt=mo.amount||0;
+    const el=document.getElementById('qp_preview');
+    if(!el) return;
+    if(amt<=0){el.style.display='none';return;}
+    el.style.display='block';
+    if(amt>=remain) el.innerHTML=`<span style="color:#16a34a;font-weight:600;">✅ 전액 수금 완료</span>`;
+    else el.innerHTML=`<span style="color:#b45309;">💳 부분 수금 · 잔여 <b>${fmtW(remain-amt)}</b></span>`;
+  } else {
+    _renderBatchPreview();
+  }
+}
+
+// ── 퀵페이 모달 ──────────────────────────────────────────────────────────────
+function openQuickPay(txId){
+  const t=S.transactions.find(x=>x.id===txId);
+  if(!t) return;
+  const remain=_txRemain(t);
+  M.qpModal={txId,amount:remain,method:'cash',cash:0,transfer:0};
+  renderModals();
+}
+function closeQuickPay(){M.qpModal=null;renderModals();}
+
+function buildQuickPayModal(){
+  const mo=M.qpModal;
+  const t=S.transactions.find(x=>x.id===mo.txId);
+  if(!t) return '';
+  const cl=S.clients.find(c=>c.id===t.clientId);
+  const total=t.amount+t.tax;
+  const already=t.paidAmount||0;
+  const remain=total-already;
+  const isSales=t.status==='미수금';
+  const accentColor=isSales?'#16a34a':'#1d4ed8';
+  const label=isSales?'수금':'지급';
+
+  const quickBtns=[
+    {label:'전액',val:remain},
+    ...(remain>=200000?[{label:'절반',val:Math.round(remain/2/1000)*1000}]:[]),
+    ...[500000,300000,200000,100000].filter(v=>v<remain&&v>0).slice(0,2).map(v=>({label:fmtW(v),val:v})),
+  ].slice(0,4).map(b=>`<button onclick="M.qpModal.amount=${b.val};document.getElementById('qp_amt').value=${b.val};_updatePayPreview('');renderModals()"
+    style="padding:5px 9px;border-radius:7px;border:1px solid #e2e8f0;background:#f8fafc;color:#475569;font-size:11px;cursor:pointer;">${esc(b.label)}</button>`).join('');
+
+  return `
+    <div onclick="closeQuickPay()" style="position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:50;display:flex;align-items:flex-end;justify-content:center;padding-bottom:env(safe-area-inset-bottom);">
+      <div onclick="event.stopPropagation()" style="background:#fff;border-radius:18px 18px 0 0;width:100%;max-width:480px;max-height:90vh;overflow-y:auto;box-shadow:0 -8px 40px rgba(0,0,0,.18);">
+        <div style="width:36px;height:4px;background:#e2e8f0;border-radius:2px;margin:10px auto 0;"></div>
+        <div style="padding:16px 18px 0;display:flex;align-items:center;justify-content:space-between;">
+          <div>
+            <div style="font-weight:700;color:#0f172a;font-size:15px;">${isSales?'💳':'💸'} ${label} 처리</div>
+            <div style="color:#64748b;font-size:12px;margin-top:2px;">${esc(cl?.name||'?')} · ${esc(t.date)}</div>
+          </div>
+          <button onclick="closeQuickPay()" style="background:none;border:none;cursor:pointer;color:#94a3b8;">${I.x}</button>
+        </div>
+        <div style="padding:16px 18px;">
+          <div style="display:grid;grid-template-columns:repeat(${already>0?3:2},1fr);gap:8px;margin-bottom:16px;">
+            <div style="background:#f8fafc;border-radius:8px;padding:10px;text-align:center;">
+              <div style="color:#94a3b8;font-size:10px;">청구금액</div>
+              <div style="color:#0f172a;font-size:14px;font-weight:700;">${fmtW(total)}</div>
+            </div>
+            ${already>0?`<div style="background:#eff6ff;border-radius:8px;padding:10px;text-align:center;">
+              <div style="color:#94a3b8;font-size:10px;">기수금</div>
+              <div style="color:#1d4ed8;font-size:14px;font-weight:700;">${fmtW(already)}</div>
+            </div>`:''}
+            <div style="background:#fefce8;border-radius:8px;padding:10px;text-align:center;">
+              <div style="color:#94a3b8;font-size:10px;">잔여금액</div>
+              <div style="color:#b45309;font-size:14px;font-weight:700;">${fmtW(remain)}</div>
+            </div>
+          </div>
+
+          <div style="margin-bottom:12px;">
+            <div style="font-size:12px;color:#64748b;margin-bottom:6px;">${label}액</div>
+            <input id="qp_amt" type="number" value="${mo.amount||''}" placeholder="${remain}"
+              style="${ISX}font-size:16px;font-weight:600;" ${FB}
+              oninput="M.qpModal.amount=Number(this.value)||0;_updatePayPreview('')">
+            <div style="display:flex;gap:5px;margin-top:6px;flex-wrap:wrap;">${quickBtns}</div>
+          </div>
+
+          <div style="margin-bottom:12px;">
+            <div style="font-size:12px;color:#64748b;margin-bottom:6px;">결제 수단</div>
+            ${_methodTabs(mo.method)}
+            ${_mixedInputs(mo.method,'')}
+          </div>
+
+          <div id="qp_preview" style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px;font-size:12px;margin-bottom:12px;display:${(mo.amount||0)>0?'block':'none'};">
+            ${(mo.amount||0)>0?((mo.amount>=remain)?'<span style="color:#16a34a;font-weight:600;">✅ 전액 수금 완료</span>':`<span style="color:#b45309;">💳 부분 수금 · 잔여 <b>${fmtW(remain-(mo.amount||0))}</b></span>`):''}
+          </div>
+
+          <div style="display:flex;gap:8px;">
+            <button onclick="closeQuickPay()" style="flex:1;padding:11px;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:10px;font-size:13px;cursor:pointer;">취소</button>
+            <button onclick="confirmQuickPay()" style="flex:2;padding:11px;border:none;background:${accentColor};color:#fff;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;">${label} 처리</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function confirmQuickPay(){
+  const mo=M.qpModal;
+  const t=S.transactions.find(x=>x.id===mo.txId);
+  if(!t) return;
+  const total=t.amount+t.tax;
+  const already=t.paidAmount||0;
+  const remain=total-already;
+  const amt=mo.method==='mixed'?(mo.cash||0)+(mo.transfer||0):(mo.amount||0);
+  if(amt<=0){showToast('금액을 입력하세요.');return;}
+  if(amt>remain){showToast('잔여금액보다 많습니다.');return;}
+
+  const isFull=amt>=remain;
+  const paidMethodDetail=mo.method==='mixed'?{cash:mo.cash||0,transfer:mo.transfer||0}:null;
+  S.transactions=S.transactions.map(tx=>{
+    if(tx.id!==mo.txId) return tx;
+    const next={...tx,paidAmount:(already+amt),paidAt:new Date().toISOString(),paidMethod:mo.method};
+    if(paidMethodDetail) next.paidMethodDetail=paidMethodDetail;
+    if(isFull) next.status=tx.status==='미수금'?'수금완료':'지급완료';
+    return next;
+  });
+  saveTX();render();closeQuickPay();
+  const icon=mo.method==='transfer'?'🏦':mo.method==='mixed'?'🔀':'💵';
+  showToast(icon+' '+(isFull?'완납 처리':'부분 수금 처리'));
+}
+
+// ── 일괄 수금 모달 ────────────────────────────────────────────────────────────
+function openBatchPay(clientId){
+  const pending=S.transactions
+    .filter(t=>t.clientId===clientId&&t.status==='미수금')
+    .sort((a,b)=>a.date.localeCompare(b.date));
+  if(!pending.length){showToast('미수금이 없습니다.');return;}
+  const totalRemain=pending.reduce((s,t)=>s+_txRemain(t),0);
+  M.batchPayModal={clientId,amount:totalRemain,method:'cash',cash:0,transfer:0};
+  renderModals();
+}
+function closeBatchPay(){M.batchPayModal=null;renderModals();}
+
+function _renderBatchPreview(){
+  const mo=M.batchPayModal;
+  const el=document.getElementById('bp_preview');
+  if(!el) return;
+  const pending=S.transactions
+    .filter(t=>t.clientId===mo.clientId&&t.status==='미수금')
+    .sort((a,b)=>a.date.localeCompare(b.date));
+  const amt=mo.method==='mixed'?(mo.cash||0)+(mo.transfer||0):(mo.amount||0);
+  if(amt<=0){el.style.display='none';return;}
+  el.style.display='block';
+  let remain=amt;
+  const rows=[];
+  for(const t of pending){
+    if(remain<=0) break;
+    const due=_txRemain(t);
+    const apply=Math.min(due,remain);
+    remain-=apply;
+    const full=apply>=due;
+    rows.push(`<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #f1f5f9;font-size:12px;">
+      <span style="color:#64748b;">${esc(t.date)} ${esc(t.memo?.slice(0,10)||'')}</span>
+      <span>${fmtW(apply)} ${full?'<span style="color:#16a34a;">→ 완납 ✅</span>':`<span style="color:#b45309;">→ 잔여 ${fmtW(due-apply)}</span>`}</span>
+    </div>`);
+  }
+  const afterTotal=pending.reduce((s,t)=>s+_txRemain(t),0)-Math.min(amt,pending.reduce((s,t)=>s+_txRemain(t),0));
+  rows.push(`<div style="display:flex;justify-content:space-between;padding:7px 0;font-size:12px;font-weight:600;">
+    <span style="color:#64748b;">입금 후 잔여 미수금</span>
+    <span style="color:${afterTotal>0?'#b45309':'#16a34a'};">${fmtW(afterTotal)}</span>
+  </div>`);
+  el.innerHTML=rows.join('');
+}
+
+function buildBatchPayModal(){
+  const mo=M.batchPayModal;
+  const cl=S.clients.find(c=>c.id===mo.clientId);
+  const pending=S.transactions
+    .filter(t=>t.clientId===mo.clientId&&t.status==='미수금')
+    .sort((a,b)=>a.date.localeCompare(b.date));
+  const totalRemain=pending.reduce((s,t)=>s+_txRemain(t),0);
+
+  const quickBtns=[
+    {label:`전액 ${fmtW(totalRemain)}`,val:totalRemain},
+    ...(totalRemain>=200000?[{label:'절반',val:Math.round(totalRemain/2/1000)*1000}]:[]),
+    ...[1000000,500000,300000,200000,100000].filter(v=>v<totalRemain).slice(0,2).map(v=>({label:fmtW(v),val:v})),
+  ].slice(0,4).map(b=>`<button onclick="M.batchPayModal.amount=${b.val};document.getElementById('bp_amt').value=${b.val};_renderBatchPreview()"
+    style="padding:5px 9px;border-radius:7px;border:1px solid #e2e8f0;background:#f8fafc;color:#475569;font-size:11px;cursor:pointer;white-space:nowrap;">${esc(b.label)}</button>`).join('');
+
+  return `
+    <div onclick="closeBatchPay()" style="position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:50;display:flex;align-items:flex-end;justify-content:center;padding-bottom:env(safe-area-inset-bottom);">
+      <div onclick="event.stopPropagation()" style="background:#fff;border-radius:18px 18px 0 0;width:100%;max-width:480px;max-height:90vh;overflow-y:auto;box-shadow:0 -8px 40px rgba(0,0,0,.18);">
+        <div style="width:36px;height:4px;background:#e2e8f0;border-radius:2px;margin:10px auto 0;"></div>
+        <div style="padding:16px 18px 0;display:flex;align-items:center;justify-content:space-between;">
+          <div>
+            <div style="font-weight:700;color:#0f172a;font-size:15px;">💰 일괄 수금</div>
+            <div style="color:#64748b;font-size:12px;margin-top:2px;">${esc(cl?.name||'?')} · 미수 ${pending.length}건 · ${fmtW(totalRemain)}</div>
+          </div>
+          <button onclick="closeBatchPay()" style="background:none;border:none;cursor:pointer;color:#94a3b8;">${I.x}</button>
+        </div>
+        <div style="padding:16px 18px;">
+          <div style="margin-bottom:12px;">
+            <div style="font-size:12px;color:#64748b;margin-bottom:6px;">입금액</div>
+            <input id="bp_amt" type="number" value="${mo.amount||''}" placeholder="${totalRemain}"
+              style="${ISX}font-size:16px;font-weight:600;" ${FB}
+              oninput="M.batchPayModal.amount=Number(this.value)||0;_renderBatchPreview()">
+            <div style="display:flex;gap:5px;margin-top:6px;flex-wrap:wrap;">${quickBtns}</div>
+          </div>
+
+          <div style="margin-bottom:12px;">
+            <div style="font-size:12px;color:#64748b;margin-bottom:6px;">결제 수단</div>
+            ${_methodTabs(mo.method)}
+            ${_mixedInputs(mo.method,'bp_')}
+          </div>
+
+          <div style="font-size:12px;color:#64748b;margin-bottom:6px;">배분 미리보기</div>
+          <div id="bp_preview" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px;font-size:12px;margin-bottom:14px;display:none;"></div>
+
+          <div style="display:flex;gap:8px;">
+            <button onclick="closeBatchPay()" style="flex:1;padding:11px;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:10px;font-size:13px;cursor:pointer;">취소</button>
+            <button onclick="confirmBatchPay()" style="flex:2;padding:11px;border:none;background:#16a34a;color:#fff;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;">수금 처리</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+}
+
+function confirmBatchPay(){
+  const mo=M.batchPayModal;
+  const pending=S.transactions
+    .filter(t=>t.clientId===mo.clientId&&t.status==='미수금')
+    .sort((a,b)=>a.date.localeCompare(b.date));
+  const amt=mo.method==='mixed'?(mo.bpCash||0)+(mo.bpTransfer||0):(mo.amount||0);
+  if(amt<=0){showToast('금액을 입력하세요.');return;}
+
+  const paidAt=new Date().toISOString();
+  const paidMethodDetail=mo.method==='mixed'?{cash:mo.bpCash||0,transfer:mo.bpTransfer||0}:null;
+  let remain=amt;
+  const updIds=new Set();
+
+  S.transactions=S.transactions.map(tx=>{
+    if(!updIds.has(tx.id)&&pending.find(p=>p.id===tx.id)&&remain>0){
+      const due=_txRemain(tx);
+      const apply=Math.min(due,remain);
+      remain-=apply;
+      const isFull=apply>=due;
+      const next={...tx,paidAmount:(tx.paidAmount||0)+apply,paidAt,paidMethod:mo.method};
+      if(paidMethodDetail) next.paidMethodDetail=paidMethodDetail;
+      if(isFull) next.status='수금완료';
+      updIds.add(tx.id);
+      return next;
+    }
+    return tx;
+  });
+
+  saveTX();render();closeBatchPay();
+  const icon=mo.method==='transfer'?'🏦':mo.method==='mixed'?'🔀':'💵';
+  showToast(`${icon} ${updIds.size}건 수금 처리`);
+}
+
 function exportData(){
   const data={exportedAt:new Date().toISOString(),version:1,clients:S.clients,transactions:S.transactions};
   const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
@@ -1679,6 +2032,8 @@ function renderModals(){
   if(M.confirm)root.innerHTML=drawer+buildConfirm();
   else if(M.scanModal)root.innerHTML=drawer+buildScanModal();
   else if(M.syncModal)root.innerHTML=drawer+buildSyncModal();
+  else if(M.qpModal)root.innerHTML=drawer+buildQuickPayModal();
+  else if(M.batchPayModal)root.innerHTML=drawer+buildBatchPayModal();
   else if(M.clientModal)root.innerHTML=drawer+buildClientModal();
   else if(M.txModal)root.innerHTML=drawer+buildTxModal();
   else root.innerHTML=drawer;
