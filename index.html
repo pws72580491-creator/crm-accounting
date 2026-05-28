@@ -1284,75 +1284,145 @@ const NAPUM_FB_CFG={
   appId:"1:96408145171:web:30a300ff2f7b735d929ee6"
 };
 
+// ── 다중 워크스페이스 동기화 ─────────────────────────────────────────────────
+// localStorage key: crm_napum_workspaces  → [{id, label, lastSync, syncedCount}]
+// localStorage key: crm_napum_synced      → ["wsId:orderId", ...]  (중복 방지)
+
+function _getWorkspaces(){ return lsGet('crm_napum_workspaces',[]); }
+function _saveWorkspaces(ws){ lsSet('crm_napum_workspaces',ws); }
+
 function openSyncModal(){
-  M.syncModal={step:'idle',wsId:lsGet('crm_napum_wsId',null)||'',result:null,error:null};
+  M.syncModal={step:'idle',newInput:'',newLabel:'',result:null,error:null,progress:null};
   renderModals();
 }
 function closeSyncModal(){M.syncModal=null;renderModals();}
 
+function syncAddWorkspace(){
+  const sm=M.syncModal;
+  const id=(sm.newInput||'').trim().toLowerCase();
+  const label=(sm.newLabel||'').trim();
+  if(!id){showToast('워크스페이스 ID를 입력하세요.');return;}
+  const ws=_getWorkspaces();
+  if(ws.find(w=>w.id===id)){showToast('이미 등록된 ID입니다.');return;}
+  ws.push({id,label:label||id,lastSync:null,syncedCount:0});
+  _saveWorkspaces(ws);
+  M.syncModal={...sm,newInput:'',newLabel:''};
+  renderModals();
+}
+function syncRemoveWorkspace(id){
+  const ws=_getWorkspaces().filter(w=>w.id!==id);
+  _saveWorkspaces(ws);
+  renderModals();
+}
+
 function buildSyncModal(){
   const sm=M.syncModal;
-  const wsId=sm.wsId||'';
+  const workspaces=_getWorkspaces();
   let body='';
 
   if(sm.step==='idle'||sm.step==='error'){
-    const lastSync=lsGet('crm_napum_lastSync',null);
-    const syncedCount=(lsGet('crm_napum_synced',[])).length;
+    const wsList=workspaces.length===0
+      ?`<div style="text-align:center;padding:18px 0;color:#94a3b8;font-size:12px;">등록된 워크스페이스가 없습니다.<br>아래에서 추가하세요.</div>`
+      :workspaces.map((w,i)=>`
+        <div style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;margin-bottom:6px;">
+          <div style="flex:1;min-width:0;">
+            <div style="font-size:13px;font-weight:600;color:#0f172a;">${esc(w.label)}</div>
+            <div style="font-size:10px;color:#94a3b8;letter-spacing:.5px;">${esc(w.id)}${w.lastSync?` · ${esc(w.lastSync)}`:''}</div>
+          </div>
+          ${w.lastSync?`<span style="font-size:10px;background:#dcfce7;color:#16a34a;padding:2px 6px;border-radius:9999px;font-weight:600;">${w.syncedCount}건</span>`:''}
+          <button onclick="syncRemoveWorkspace('${esc(w.id)}')" style="background:none;border:none;cursor:pointer;color:#fca5a5;padding:2px;" title="삭제">${I.trash}</button>
+        </div>`).join('');
+
     body=`
-      <div style="margin-bottom:16px;">
-        <div style="color:#64748b;font-size:12px;margin-bottom:6px;">납품 관리 Pro 워크스페이스 ID</div>
-        <input id="sm_wsId" value="${esc(wsId)}" placeholder="예: myshop2024"
-          style="${ISX}font-size:15px;letter-spacing:1px;" ${FB}
-          oninput="M.syncModal.wsId=this.value.trim()">
-        <div style="color:#94a3b8;font-size:11px;margin-top:5px;">납품 관리 앱 설정 탭의 워크스페이스 ID를 입력하세요.</div>
+      <div style="margin-bottom:14px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+          <div style="font-size:12px;font-weight:600;color:#475569;">연동 워크스페이스 (${workspaces.length}개)</div>
+        </div>
+        <div style="max-height:180px;overflow-y:auto;">${wsList}</div>
       </div>
-      ${lastSync?`<div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:#16a34a;">✅ 마지막 동기화: ${esc(lastSync)} · ${syncedCount}건 연동됨</div>`:''}
-      ${sm.error?`<div style="background:#fff1f2;border:1px solid #fecdd3;border-radius:8px;padding:10px 12px;margin-bottom:12px;font-size:12px;color:#dc2626;">⚠️ ${esc(sm.error)}</div>`:''}
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:4px;">
-        <div style="background:#fefce8;border:1px solid #fef08a;border-radius:8px;padding:10px;font-size:11px;color:#713f12;">
+      <div style="background:#fefce8;border:1px solid #fef08a;border-radius:8px;padding:12px;margin-bottom:12px;">
+        <div style="font-size:11px;font-weight:600;color:#713f12;margin-bottom:8px;">+ 워크스페이스 추가</div>
+        <input id="sm_newLabel" value="${esc(sm.newLabel||'')}" placeholder="이름 (예: 홍길동)"
+          style="${ISX}font-size:13px;margin-bottom:6px;" ${FB}
+          oninput="M.syncModal.newLabel=this.value">
+        <div style="display:flex;gap:6px;">
+          <input id="sm_newId" value="${esc(sm.newInput||'')}" placeholder="워크스페이스 ID (예: myshop2024)"
+            style="${ISX}font-size:13px;flex:1;" ${FB}
+            oninput="M.syncModal.newInput=this.value"
+            onkeydown="if(event.key==='Enter')syncAddWorkspace()">
+          <button onclick="syncAddWorkspace()" style="padding:8px 12px;border:none;background:#d97706;color:#fff;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;white-space:nowrap;">추가</button>
+        </div>
+      </div>
+      ${sm.error?`<div style="background:#fff1f2;border:1px solid #fecdd3;border-radius:8px;padding:10px 12px;margin-bottom:10px;font-size:12px;color:#dc2626;">⚠️ ${esc(sm.error)}</div>`:''}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+        <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:9px;font-size:11px;color:#0c4a6e;">
           <div style="font-weight:600;margin-bottom:3px;">가져오는 항목</div>
-          <div>• 납품 거래처 → 매출처</div>
-          <div>• 납품 전표 → 매출 거래</div>
-          <div>• 완납 → 수금완료</div>
-          <div>• 미납 → 미수금</div>
+          <div>• 거래처 → 매출처 자동 병합</div>
+          <div>• 전표 → 매출 거래</div>
+          <div>• 완납/미납 상태 동기화</div>
         </div>
-        <div style="background:#f0f9ff;border:1px solid #bae6fd;border-radius:8px;padding:10px;font-size:11px;color:#0c4a6e;">
-          <div style="font-weight:600;margin-bottom:3px;">주의사항</div>
-          <div>• 중복 방지 자동 처리</div>
-          <div>• 기존 CRM 데이터 유지</div>
-          <div>• 타인거래 전표 제외</div>
-          <div>• 세액 = 공급가 × 10%</div>
+        <div style="background:#fdf4ff;border:1px solid #e9d5ff;border-radius:8px;padding:9px;font-size:11px;color:#581c87;">
+          <div style="font-weight:600;margin-bottom:3px;">다중 사용자</div>
+          <div>• 전 사용자 동시 동기화</div>
+          <div>• 출처 태그 자동 기재</div>
+          <div>• 중복 전표 자동 방지</div>
         </div>
       </div>`;
+
   } else if(sm.step==='loading'){
+    const prog=sm.progress||{current:0,total:0,label:''};
+    const pct=prog.total>0?Math.round(prog.current/prog.total*100):0;
     body=`
-      <div style="text-align:center;padding:32px 0;">
-        <div style="width:40px;height:40px;border:3px solid #e2e8f0;border-top-color:#d97706;border-radius:50%;animation:sp .8s linear infinite;margin:0 auto 14px;"></div>
-        <div style="color:#64748b;font-size:13px;">납품 관리 데이터를 읽어오는 중...</div>
+      <div style="text-align:center;padding:24px 0 16px;">
+        <div style="width:44px;height:44px;border:3px solid #e2e8f0;border-top-color:#d97706;border-radius:50%;animation:sp .8s linear infinite;margin:0 auto 14px;"></div>
+        <div style="color:#0f172a;font-size:13px;font-weight:600;margin-bottom:4px;">${prog.total>1?`${prog.current}/${prog.total} 워크스페이스 처리 중`:''}</div>
+        <div style="color:#64748b;font-size:12px;">${esc(prog.label||'데이터를 읽어오는 중...')}</div>
+        ${prog.total>1?`
+        <div style="margin:14px 0 0;background:#e2e8f0;border-radius:9999px;height:6px;overflow:hidden;">
+          <div style="width:${pct}%;height:100%;background:#d97706;border-radius:9999px;transition:width .3s;"></div>
+        </div>`:''}
       </div>`;
+
   } else if(sm.step==='done'){
     const r=sm.result;
+    const perWs=r.perWorkspace||[];
     body=`
-      <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:16px;margin-bottom:16px;">
-        <div style="color:#16a34a;font-weight:700;font-size:15px;margin-bottom:10px;">✅ 동기화 완료</div>
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+      <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:14px;margin-bottom:12px;">
+        <div style="color:#16a34a;font-weight:700;font-size:14px;margin-bottom:10px;">✅ 전체 동기화 완료</div>
+        <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;">
           ${[
+            {label:'워크스페이스',val:r.wsCount+'개',color:'#7c3aed',bg:'#f5f3ff'},
             {label:'신규 거래처',val:r.newClients+'개',color:'#16a34a',bg:'#f0fdf4'},
             {label:'신규 거래',val:r.newTx+'건',color:'#b45309',bg:'#fefce8'},
             {label:'업데이트',val:r.updTx+'건',color:'#1d4ed8',bg:'#eff6ff'},
-            {label:'건너뜀',val:r.skipped+'건',color:'#64748b',bg:'#f8fafc'},
           ].map(({label,val,color,bg})=>`
-            <div style="background:${bg};border-radius:8px;padding:10px;text-align:center;">
-              <div style="color:${color};font-size:18px;font-weight:700;">${esc(val)}</div>
-              <div style="color:#94a3b8;font-size:11px;">${esc(label)}</div>
+            <div style="background:${bg};border-radius:8px;padding:8px 4px;text-align:center;">
+              <div style="color:${color};font-size:16px;font-weight:700;">${esc(val)}</div>
+              <div style="color:#94a3b8;font-size:10px;">${esc(label)}</div>
             </div>`).join('')}
         </div>
       </div>
-      <div style="color:#64748b;font-size:12px;text-align:center;">대시보드에서 결과를 확인하세요.</div>`;
+      ${perWs.length>1?`
+      <div style="font-size:11px;color:#64748b;margin-bottom:8px;font-weight:600;">워크스페이스별 결과</div>
+      <div style="display:flex;flex-direction:column;gap:5px;max-height:150px;overflow-y:auto;">
+        ${perWs.map(w=>`
+          <div style="display:flex;align-items:center;justify-content:space-between;padding:7px 10px;background:#f8fafc;border-radius:7px;border:1px solid #e2e8f0;">
+            <div>
+              <span style="font-size:12px;font-weight:600;color:#0f172a;">${esc(w.label)}</span>
+              <span style="font-size:10px;color:#94a3b8;margin-left:4px;">${esc(w.id)}</span>
+            </div>
+            <div style="display:flex;gap:6px;">
+              ${w.error
+                ?`<span style="font-size:10px;background:#fee2e2;color:#dc2626;padding:2px 7px;border-radius:9999px;">오류</span>`
+                :`<span style="font-size:10px;background:#dcfce7;color:#16a34a;padding:2px 7px;border-radius:9999px;">+${w.newTx}건</span>`}
+            </div>
+          </div>`).join('')}
+      </div>`:''}`;
   }
 
-  const showRunBtn=(sm.step==='idle'||sm.step==='error');
-  const showCloseBtn=(sm.step==='done'||sm.step==='error'||sm.step==='idle');
+  const isIdle=sm.step==='idle'||sm.step==='error';
+  const isDone=sm.step==='done';
+  const isLoading=sm.step==='loading';
 
   return `
     <div onclick="closeSyncModal()" style="position:fixed;top:0;right:0;bottom:0;left:0;background:rgba(15,23,42,.45);z-index:50;display:flex;align-items:center;justify-content:center;padding:16px;">
@@ -1365,139 +1435,157 @@ function buildSyncModal(){
           <button onclick="closeSyncModal()" style="background:none;border:none;cursor:pointer;color:#94a3b8;">${I.x}</button>
         </div>
         <div style="padding:18px;">${body}</div>
-        ${showRunBtn||sm.step==='loading'?`
         <div style="display:flex;gap:8px;padding:0 18px 18px;">
-          <button onclick="closeSyncModal()" style="flex:1;padding:10px;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:8px;font-size:13px;cursor:pointer;">닫기</button>
-          <button onclick="doSyncFromDelivery()" ${sm.step==='loading'?'disabled':''} style="flex:2;padding:10px;border:none;background:${sm.step==='loading'?'#fcd34d':'#d97706'};color:#fff;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">
-            ${sm.step==='loading'?'동기화 중...':'▶ 지금 동기화'}
-          </button>
-        </div>`:`
-        <div style="padding:0 18px 18px;">
-          <button onclick="closeSyncModal()" style="width:100%;padding:10px;border:none;background:#d97706;color:#fff;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">확인</button>
-        </div>`}
+          ${isDone
+            ?`<button onclick="closeSyncModal()" style="flex:1;padding:10px;border:none;background:#d97706;color:#fff;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">확인</button>`
+            :`<button onclick="closeSyncModal()" style="flex:1;padding:10px;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:8px;font-size:13px;cursor:pointer;">닫기</button>
+              <button onclick="doSyncFromDelivery()" ${isLoading||workspaces.length===0?'disabled':''} style="flex:2;padding:10px;border:none;background:${isLoading?'#fcd34d':workspaces.length===0?'#e2e8f0':'#d97706'};color:${workspaces.length===0?'#94a3b8':'#fff'};border-radius:8px;font-size:13px;font-weight:600;cursor:${workspaces.length===0?'not-allowed':'pointer'};">
+                ${isLoading?'동기화 중...':workspaces.length===0?'워크스페이스 없음':`▶ 전체 동기화 (${workspaces.length}개)`}
+              </button>`}
+        </div>
       </div>
     </div>`;
 }
 
 async function doSyncFromDelivery(){
   const sm=M.syncModal;
-  const wsId=(sm.wsId||'').trim().toLowerCase();
-  if(!wsId){showToast('워크스페이스 ID를 입력하세요.');return;}
+  const workspaces=_getWorkspaces();
+  if(!workspaces.length){showToast('워크스페이스를 먼저 추가하세요.');return;}
 
-  // 상태: 로딩
-  M.syncModal={...sm,step:'loading',error:null};
+  M.syncModal={...sm,step:'loading',error:null,progress:{current:0,total:workspaces.length,label:'Firebase 초기화 중...'}};
   renderModals();
 
   try{
-    // Firebase SDK가 아직 로드 안 됐으면 initFirebase() 실행
     if(!_fbReady){
       await initFirebase();
       if(!_fbReady) throw new Error('Firebase SDK 로드 실패. 네트워크를 확인해주세요.');
     }
 
-    // 납품 관리 Firebase 앱 초기화 (named instance 'napum')
+    // 납품 관리 Firebase named instance
     let napumApp;
     try{ napumApp=firebase.app('napum'); }
     catch(e){ napumApp=firebase.initializeApp(NAPUM_FB_CFG,'napum'); }
     const napumDb=napumApp.database();
 
-    // 데이터 읽기
-    const wsRef=napumDb.ref('workspaces/'+wsId);
-    const [csSnap,ordSnap]=await Promise.all([
-      wsRef.child('clients').get(),
-      wsRef.child('orders').get()
-    ]);
-
-    if(!csSnap.exists()&&!ordSnap.exists()){
-      throw new Error(`워크스페이스 "${wsId}"를 찾을 수 없습니다. ID를 확인해주세요.`);
-    }
-
-    const napumClients=Object.values(csSnap.val()||{});
-    const napumOrders =Object.values(ordSnap.val()||{});
-
-    // ── 거래처 매핑 ──────────────────────────────────────────────────────────
-    let newClients=0;
-    // 이름 → CRM clientId 매핑 테이블
+    // 이름 → CRM clientId 매핑 (공유, 누적)
     const nameToId={};
     S.clients.forEach(c=>{ nameToId[c.name]=c.id; });
 
-    napumClients.forEach(nc=>{
-      if(!nc.name||nc.isHidden) return;
-      if(!nameToId[nc.name]){
-        const newC={
-          id:nextId(S.clients),
-          name:nc.name,
-          bizNo:'',rep:'',phone:'',email:'',address:'',
-          type:'매출처',
-          memo:nc.note||''
-        };
-        S.clients=[...S.clients,newC];
-        nameToId[nc.name]=newC.id;
-        newClients++;
-      }
-    });
-
-    // ── 거래 매핑 ────────────────────────────────────────────────────────────
+    // 이미 동기화된 "wsId:orderId" 집합
     const synced=new Set(lsGet('crm_napum_synced',[]));
-    // 납품 order.id → CRM tx.id 역참조 (업데이트용)
+
+    // _napumId → CRM tx.id 역참조
     const napumIdToCrmId={};
     S.transactions.forEach(t=>{ if(t._napumId) napumIdToCrmId[t._napumId]=t.id; });
 
-    let newTx=0,updTx=0,skipped=0;
+    let totalNewClients=0,totalNewTx=0,totalUpdTx=0;
+    const perWorkspace=[];
+    const wsListUpdated=[...workspaces];
 
-    napumOrders.forEach(o=>{
-      if(o.isVoid) { skipped++; return; }
-      if(!o.date||!o.total) { skipped++; return; }
+    for(let i=0;i<workspaces.length;i++){
+      const ws=workspaces[i];
+      M.syncModal={...M.syncModal,progress:{current:i+1,total:workspaces.length,label:`"${ws.label}" 읽는 중...`}};
+      renderModals();
 
-      // clientId → 이름 → CRM id 역추적
-      const napumClient=napumClients.find(c=>c.id===o.clientId);
-      const crmName=o.clientName||(napumClient?.name||'');
-      const crmClientId=nameToId[crmName];
-      if(!crmClientId){ skipped++; return; }
+      let wsNewClients=0,wsNewTx=0,wsUpdTx=0;
+      try{
+        const wsRef=napumDb.ref('workspaces/'+ws.id);
+        const [csSnap,ordSnap]=await Promise.all([
+          wsRef.child('clients').get(),
+          wsRef.child('orders').get()
+        ]);
 
-      const memoItems=(o.items||[]).map(i=>`${i.name}${i.qty>1?` ×${i.qty}`:''}`).join(', ');
-      const memo=o.note||(memoItems||'납품');
-      const amount=Number(o.total)||0;
-      const tax=Math.round(amount*0.1);
-      const status=o.isPaid?'수금완료':'미수금';
+        if(!csSnap.exists()&&!ordSnap.exists()){
+          perWorkspace.push({...ws,error:true,newTx:0});
+          wsListUpdated[i]={...ws,lastSync:'ID 없음',syncedCount:0};
+          continue;
+        }
 
-      if(napumIdToCrmId[o.id]){
-        // 이미 연동된 전표 → 상태만 업데이트
-        S.transactions=S.transactions.map(t=>{
-          if(t.id===napumIdToCrmId[o.id]) return {...t,status,amount,tax,memo};
-          return t;
+        const napumClients=Object.values(csSnap.val()||{});
+        const napumOrders =Object.values(ordSnap.val()||{});
+
+        // 거래처 병합
+        napumClients.forEach(nc=>{
+          if(!nc.name||nc.isHidden) return;
+          if(!nameToId[nc.name]){
+            const newC={
+              id:nextId(S.clients),
+              name:nc.name,
+              bizNo:'',rep:'',phone:'',email:'',address:'',
+              type:'매출처',
+              memo:`[${ws.label}]${nc.note?' '+nc.note:''}`
+            };
+            S.clients=[...S.clients,newC];
+            nameToId[nc.name]=newC.id;
+            wsNewClients++;
+            totalNewClients++;
+          }
         });
-        updTx++;
-      } else if(!synced.has(o.id)){
-        // 신규 전표 추가
-        const newT={
-          id:nextId(S.transactions),
-          date:o.date,
-          clientId:crmClientId,
-          type:'매출',
-          amount,tax,memo,status,
-          _napumId:o.id   // 역참조용 마커
-        };
-        S.transactions=[...S.transactions,newT];
-        synced.add(o.id);
-        newTx++;
-      } else {
-        skipped++;
+
+        // 거래 처리
+        napumOrders.forEach(o=>{
+          if(o.isVoid) return;
+          if(!o.date||!o.total) return;
+
+          const napumClient=napumClients.find(c=>c.id===o.clientId);
+          const crmName=o.clientName||(napumClient?.name||'');
+          const crmClientId=nameToId[crmName];
+          if(!crmClientId) return;
+
+          const memoItems=(o.items||[]).map(i=>`${i.name}${i.qty>1?` ×${i.qty}`:''}`).join(', ');
+          const memo=`[${ws.label}] ${o.note||(memoItems||'납품')}`;
+          const amount=Number(o.total)||0;
+          const tax=Math.round(amount*0.1);
+          const status=o.isPaid?'수금완료':'미수금';
+          const napumKey=`${ws.id}:${o.id}`;
+
+          if(napumIdToCrmId[napumKey]){
+            S.transactions=S.transactions.map(t=>{
+              if(t.id===napumIdToCrmId[napumKey]) return {...t,status,amount,tax,memo};
+              return t;
+            });
+            wsUpdTx++;totalUpdTx++;
+          } else if(!synced.has(napumKey)){
+            const newT={
+              id:nextId(S.transactions),
+              date:o.date,clientId:crmClientId,
+              type:'매출',amount,tax,memo,status,
+              _napumId:napumKey
+            };
+            S.transactions=[...S.transactions,newT];
+            synced.add(napumKey);
+            wsNewTx++;totalNewTx++;
+          }
+        });
+
+        const wsTotal=wsNewTx+wsUpdTx;
+        wsListUpdated[i]={...ws,lastSync:new Date().toLocaleString('ko-KR'),syncedCount:wsTotal};
+        perWorkspace.push({...ws,error:false,newTx:wsNewTx,updTx:wsUpdTx});
+
+      }catch(err){
+        perWorkspace.push({...ws,error:true,newTx:0,msg:err.message});
+        wsListUpdated[i]={...ws,lastSync:'오류',syncedCount:0};
       }
-    });
+    }
 
     // 저장
+    _saveWorkspaces(wsListUpdated);
     lsSet('crm_napum_synced',[...synced]);
-    lsSet('crm_napum_wsId',wsId);
-    lsSet('crm_napum_lastSync',new Date().toLocaleString('ko-KR'));
     await saveC();
     await saveTX();
+    render();
 
-    M.syncModal={...sm,step:'done',result:{newClients,newTx,updTx,skipped}};
+    M.syncModal={...M.syncModal,step:'done',result:{
+      wsCount:workspaces.length,
+      newClients:totalNewClients,
+      newTx:totalNewTx,
+      updTx:totalUpdTx,
+      perWorkspace
+    }};
     renderModals();
 
   }catch(err){
-    M.syncModal={...sm,step:'error',error:err.message||'알 수 없는 오류가 발생했습니다.'};
+    M.syncModal={...M.syncModal,step:'error',error:err.message||'알 수 없는 오류가 발생했습니다.'};
     renderModals();
   }
 }
