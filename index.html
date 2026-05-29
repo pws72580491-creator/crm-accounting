@@ -359,6 +359,23 @@ async function loadData(){
   // 1) 로컬 캐시 즉시 렌더 — 반드시 스플래시 제거
   S.clients     =lsGet('crm_clients',SAMPLE_CLIENTS);
   S.transactions=lsGet('crm_tx',SAMPLE_TX);
+
+  // ── 마이그레이션: 납품 연동 거래의 잘못된 tax 보정
+  // _napumId가 있는 거래는 o.total을 공급가액으로 착각해 tax=amount*0.1이 추가됐었음
+  // 올바른 상태: amount=o.total(부가세포함 최종금액), tax=0
+  let _migrated=false;
+  S.transactions=S.transactions.map(t=>{
+    if(t._napumId && t.tax>0 && Math.round(t.amount*0.1)===t.tax){
+      _migrated=true;
+      return {...t, tax:0};
+    }
+    return t;
+  });
+  if(_migrated){
+    lsSet('crm_tx',S.transactions);
+    console.info('[마이그레이션] 납품 연동 거래의 tax 자동 보정 완료');
+  }
+
   try{ render(); }catch(e){ console.error('render 오류:',e); }
   finally{ hideSplash(); }
 
@@ -395,6 +412,12 @@ async function loadData(){
 
   // 4) 실시간 리스너
   _attachListeners();
+
+  // 5) 마이그레이션된 데이터 Firebase에도 반영 (fire-and-forget)
+  if(_migrated && db){
+    try{ await db.ref('transactions').set(toMap(S.transactions)); }
+    catch(e){ console.warn('마이그레이션 클라우드 반영 실패:',e); }
+  }
 }
 
 let _offC=null,_offTX=null;
@@ -1684,8 +1707,10 @@ async function doSyncFromDelivery(){
 
           const memoItems=(o.items||[]).map(i=>`${i.name}${i.qty>1?` ×${i.qty}`:''}`).join(', ');
           const memo=`[${ws.label}] ${o.note||(memoItems||'납품')}`;
+          // o.total = 납품앱의 부가세 포함 최종 청구금액
+          // CRM에서 tax를 별도 계산하면 금액이 뻥튀기되므로 tax=0으로 저장
           const amount=Number(o.total)||0;
-          const tax=Math.round(amount*0.1);
+          const tax=0;
           // 납품 결제 상태 → CRM 상태 매핑
           const napumPaid = o.isPaid;
           const napumPartial = !o.isPaid && (o.paidAmount||0) > 0;
@@ -2532,16 +2557,14 @@ async function confirmReset(){
 
   if(input!==keyword){
     showToast(`"${keyword}"를 정확히 입력하세요.`);
-    if(inputEl){inputEl.style.borderColor='#dc2626';}
+    if(inputEl) inputEl.style.borderColor='#dc2626';
     return;
   }
 
-  // ── 실제 삭제 수행 ──────────────────────────────────────────────
+  // ── 1) 로컬 상태 먼저 갱신 ───────────────────────────────────────
+  const scope=rm.scope;
   try{
-    const scope=rm.scope;
     if(scope==='all'){
-      S.transactions.forEach(t=>_deleteDoc('transactions',t.id));
-      S.clients.forEach(c=>_deleteDoc('clients',c.id));
       S.transactions=[];
       S.clients=[];
       lsSet('crm_clients',[]);
@@ -2549,43 +2572,58 @@ async function confirmReset(){
       lsSet('crm_napum_synced',[]);
 
     }else if(scope==='txonly'){
-      S.transactions.forEach(t=>_deleteDoc('transactions',t.id));
       S.transactions=[];
       lsSet('crm_tx',[]);
       lsSet('crm_napum_synced',[]);
 
     }else if(scope==='localonly'){
-      const toDelete=S.transactions.filter(t=>!t._napumId);
-      toDelete.forEach(t=>_deleteDoc('transactions',t.id));
       S.transactions=S.transactions.filter(t=>t._napumId);
+      lsSet('crm_tx',S.transactions);
 
     }else if(scope==='client'&&tc){
-      S.transactions.filter(t=>t.clientId===tc.id).forEach(t=>_deleteDoc('transactions',t.id));
-      _deleteDoc('clients',tc.id);
       S.transactions=S.transactions.filter(t=>t.clientId!==tc.id);
       S.clients=S.clients.filter(c=>c.id!==tc.id);
-      if(S.cExpanded===tc.id)S.cExpanded=null;
+      if(S.cExpanded===tc.id) S.cExpanded=null;
+      lsSet('crm_clients',S.clients);
+      lsSet('crm_tx',S.transactions);
     }
-
-    // 로컬 저장 먼저 (클라우드 실패해도 로컬은 반드시 반영)
-    lsSet('crm_clients',S.clients);
-    lsSet('crm_tx',S.transactions);
-
-    // 모달 닫고 화면 갱신 (클라우드 저장 전에 먼저 UI 업데이트)
-    closeResetModal();
-    render();
-    const labels={all:'전체 초기화',txonly:'거래 내역 삭제',localonly:'로컬 거래 삭제',client:`${tc?.name||''} 삭제`};
-    showToast('✅ '+labels[scope]+' 완료');
-
-    // 클라우드 저장 (실패해도 UI에는 영향 없음)
-    try{ await saveC(); }catch(e){ console.warn('saveC 실패:',e); }
-    try{ await saveTX(); }catch(e){ console.warn('saveTX 실패:',e); }
-
   }catch(e){
-    console.error('초기화 오류:',e);
+    console.error('로컬 초기화 오류:',e);
     showToast('⚠️ 초기화 중 오류가 발생했습니다.');
-    closeResetModal();
-    render();
+    return;
+  }
+
+  // ── 2) UI 즉시 갱신 (Firebase 기다리지 않음) ─────────────────────
+  closeResetModal();
+  render();
+  const labels={all:'전체 초기화',txonly:'거래 내역 삭제',localonly:'로컬 거래 삭제',client:`${tc?.name||''} 삭제`};
+  showToast('✅ '+labels[scope]+' 완료');
+
+  // ── 3) Firebase: 개별 삭제 대신 한 번에 덮어쓰기 ─────────────────
+  if(db){
+    try{
+      if(scope==='all'){
+        await Promise.all([
+          db.ref('clients').set(null),
+          db.ref('transactions').set(null),
+        ]);
+      }else if(scope==='txonly'){
+        await db.ref('transactions').set(null);
+      }else if(scope==='localonly'){
+        // 남은 것만 다시 올리기
+        await db.ref('transactions').set(
+          S.transactions.length ? toMap(S.transactions) : null
+        );
+      }else if(scope==='client'&&tc){
+        await Promise.all([
+          db.ref('clients').set(S.clients.length ? toMap(S.clients) : null),
+          db.ref('transactions').set(S.transactions.length ? toMap(S.transactions) : null),
+        ]);
+      }
+    }catch(e){
+      console.warn('Firebase 초기화 실패 (로컬은 삭제됨):', e);
+      showToast('⚠️ 클라우드 삭제 실패 (로컬은 완료)');
+    }
   }
 }
 
