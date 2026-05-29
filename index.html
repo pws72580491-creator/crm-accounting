@@ -491,12 +491,54 @@ function deleteTxFn(id){
 }
 function toggleStatus(txId){
   const next={미수금:'수금완료',수금완료:'미수금',미지급금:'지급완료',지급완료:'미지급금'};
-  S.transactions=S.transactions.map(t=>t.id===txId?{...t,status:next[t.status]||t.status}:t);
+  let updatedTx=null;
+  S.transactions=S.transactions.map(t=>{
+    if(t.id!==txId) return t;
+    const newStatus=next[t.status]||t.status;
+    // 수금완료/지급완료로 바뀌는 경우 paidAmount를 전액으로 세팅
+    const isFull=newStatus==='수금완료'||newStatus==='지급완료';
+    const u={...t,status:newStatus};
+    if(isFull&&!u.paidAmount){
+      u.paidAmount=t.amount+t.tax;
+      u.paidAt=new Date().toISOString();
+      u.paidMethod=u.paidMethod||'cash';
+    }
+    updatedTx=u;
+    return u;
+  });
   saveTX();render();
+  // 납품 관리 역방향 패치
+  if(updatedTx&&updatedTx._napumId){
+    setTimeout(()=>{
+      _patchNapumOrder(updatedTx._napumId,_buildNapumPatch(updatedTx))
+        .then(ok=>showToast(ok?'📦 납품 관리에도 반영됨':'⚠️ 납품 관리 반영 실패 (로그 확인)'))
+        .catch(()=>showToast('⚠️ 납품 관리 반영 실패'));
+    },800);
+  }
 }
 function completeStatus(txId,status){
-  S.transactions=S.transactions.map(t=>t.id===txId?{...t,status}:t);
+  let updatedTx=null;
+  S.transactions=S.transactions.map(t=>{
+    if(t.id!==txId) return t;
+    const isFull=status==='수금완료'||status==='지급완료';
+    const u={...t,status};
+    if(isFull&&!u.paidAmount){
+      u.paidAmount=t.amount+t.tax;
+      u.paidAt=new Date().toISOString();
+      u.paidMethod=u.paidMethod||'cash';
+    }
+    updatedTx=u;
+    return u;
+  });
   saveTX();render();
+  // 납품 관리 역방향 패치
+  if(updatedTx&&updatedTx._napumId){
+    setTimeout(()=>{
+      _patchNapumOrder(updatedTx._napumId,_buildNapumPatch(updatedTx))
+        .then(ok=>showToast(ok?'📦 납품 관리에도 반영됨':'⚠️ 납품 관리 반영 실패 (로그 확인)'))
+        .catch(()=>showToast('⚠️ 납품 관리 반영 실패'));
+    },800);
+  }
 }
 
 // ── NAV ITEMS ─────────────────────────────────────────────────────────────────
@@ -1926,23 +1968,40 @@ function buildQuickPayModal(){
 // ── 납품 관리 역방향 패치 ────────────────────────────────────────────────────
 // CRM 결제 처리 후 → 납품 관리 Firebase의 order 결제 필드 동기화
 async function _patchNapumOrder(napumKey, patchObj){
-  // napumKey = "wsId:orderId"
-  if(!napumKey||!napumKey.includes(':')) return;
-  const sep=napumKey.indexOf(':');
+  // napumKey = "wsId:orderId" (wsId는 마지막 : 앞까지, orderId는 마지막 : 이후)
+  if(!napumKey||!napumKey.includes(':')) return false;
+  // wsId 자체에 : 가 있을 수 있으므로 lastIndexOf 사용
+  const sep=napumKey.lastIndexOf(':');
   const wsId=napumKey.slice(0,sep);
   const orderId=napumKey.slice(sep+1);
-  if(!wsId||!orderId) return;
+  if(!wsId||!orderId){ console.warn('napumKey 파싱 실패:', napumKey); return false; }
 
   try{
-    if(!_fbReady) await initFirebase();
+    // SDK 로드 보장 (CRM Firebase와 별개로 처리)
+    if(typeof firebase==='undefined'){
+      console.warn('Firebase SDK 미로드');
+      return false;
+    }
+    // 납품앱 named instance 확보
     let napumApp;
     try{ napumApp=firebase.app('napum'); }
     catch(e){ napumApp=firebase.initializeApp(NAPUM_FB_CFG,'napum'); }
+
     const ref=napumApp.database().ref(`workspaces/${wsId}/orders/${orderId}`);
+
+    // 실제 노드 존재 여부 확인 (잘못된 wsId/orderId 감지)
+    const snap=await ref.once('value');
+    if(!snap.exists()){
+      console.warn('납품앱 order 없음 (wsId/orderId 불일치?):', wsId, orderId);
+      return false;
+    }
+
     await ref.update(patchObj);
+    console.info('납품 역방향 패치 성공:', napumKey, patchObj);
+    return true;
   } catch(e){
-    console.warn('납품 역방향 패치 실패:', e.message);
-    // 실패해도 CRM 처리는 정상 완료로 유지
+    console.warn('납품 역방향 패치 실패:', e.message, '| napumKey:', napumKey);
+    return false;
   }
 }
 
@@ -1991,8 +2050,8 @@ function confirmQuickPay(){
   if(updatedTx&&updatedTx._napumId){
     setTimeout(()=>{
       _patchNapumOrder(updatedTx._napumId, _buildNapumPatch(updatedTx))
-        .then(()=>showToast('📦 납품 관리에도 반영됨'))
-        .catch(()=>{});
+        .then(ok=>showToast(ok?'📦 납품 관리에도 반영됨':'⚠️ 납품 관리 반영 실패 (로그 확인)'))
+        .catch(()=>showToast('⚠️ 납품 관리 반영 실패'));
     },1200);
   }
 }
@@ -2130,8 +2189,13 @@ function confirmBatchPay(){
   if(napumTxs.length>0){
     setTimeout(()=>{
       Promise.all(napumTxs.map(t=>_patchNapumOrder(t._napumId,_buildNapumPatch(t))))
-        .then(()=>showToast(`📦 납품 관리 ${napumTxs.length}건 반영됨`))
-        .catch(()=>{});
+        .then(results=>{
+          const ok=results.filter(Boolean).length;
+          const fail=results.length-ok;
+          if(fail>0) showToast(`📦 납품 관리 ${ok}건 반영 / ⚠️ ${fail}건 실패`);
+          else showToast(`📦 납품 관리 ${ok}건 반영됨`);
+        })
+        .catch(()=>showToast('⚠️ 납품 관리 반영 실패'));
     },1200);
   }
 }
