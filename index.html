@@ -266,7 +266,7 @@ const FB=`onfocus="this.style.borderColor='#d97706'" onblur="this.style.borderCo
 
 // ── State ─────────────────────────────────────────────────────────────────────
 let S={view:'dashboard',clients:[],transactions:[],cSearch:'',cFilter:'전체',cExpanded:null,txSearch:'',txTf:'전체',txSf:'전체',txMonth:thisMonth(),txPeriodMode:'monthly',txDate:localDate(),txWeek:null,drawerOpen:false};
-let M={clientModal:null,txModal:null,confirm:null,scanModal:null,syncModal:null,qpModal:null,batchPayModal:null};
+let M={clientModal:null,txModal:null,confirm:null,scanModal:null,syncModal:null,qpModal:null,batchPayModal:null,statModal:null,resetModal:null};
 
 // ── Toast (최상단 정의 - saveC/saveTX에서 사용) ───────────────────────────────
 let _toastTimer=null;
@@ -349,7 +349,7 @@ async function initFirebase(){
 }
 
 // ── Persistence (Realtime DB + localStorage 캐시) ─────────────────────────────
-function lsGet(key,def){try{return JSON.parse(localStorage.getItem(key))||def;}catch{return def;}}
+function lsGet(key,def){try{const v=JSON.parse(localStorage.getItem(key));return v!=null?v:def;}catch{return def;}}
 function lsSet(key,val){try{localStorage.setItem(key,JSON.stringify(val));}catch(e){}}
 
 const toMap=arr=>arr.reduce((m,o)=>{m[o.id]=o;return m;},{});
@@ -448,13 +448,12 @@ function saveClient(f){
   saveC();M.clientModal=null;render();
 }
 function deleteClient(id){
-  // 원본에서 연관 tx id 추출 후 삭제 (필터 전에 먼저 수행)
-  const allOldTx=lsGet('crm_tx',[]);
-  allOldTx.filter(t=>t.clientId===id).forEach(t=>_deleteDoc('transactions',t.id));
+  // S.transactions 기준으로 연관 tx Firebase 삭제
+  S.transactions.filter(t=>t.clientId===id).forEach(t=>_deleteDoc('transactions',t.id));
+  _deleteDoc('clients',id);
   S.clients=S.clients.filter(c=>c.id!==id);
   S.transactions=S.transactions.filter(t=>t.clientId!==id);
   if(S.cExpanded===id)S.cExpanded=null;
-  _deleteDoc('clients',id);
   saveC();saveTX();M.confirm=null;render();
 }
 function saveTxFn(f){
@@ -567,8 +566,8 @@ function buildDashboard(){
   const pur=monT.filter(t=>t.type==='매입').reduce((s,t)=>s+t.amount,0);
   const pl=rev-pur;
   const plColor=pl>=0?'#16a34a':'#dc2626';
-  const rcv=S.transactions.filter(t=>t.status==='미수금').reduce((s,t)=>s+t.amount+t.tax,0);
-  const pay=S.transactions.filter(t=>t.status==='미지급금').reduce((s,t)=>s+t.amount+t.tax,0);
+  const rcv=S.transactions.filter(t=>t.status==='미수금').reduce((s,t)=>s+_txRemain(t),0);
+  const pay=S.transactions.filter(t=>t.status==='미지급금').reduce((s,t)=>s+_txRemain(t),0);
   const recent=[...S.transactions].filter(t=>t.date.startsWith(mon)).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,6);
   const clientRev={};
   S.transactions.filter(t=>t.type==='매출'&&t.date.startsWith(mon)).forEach(t=>{clientRev[t.clientId]=(clientRev[t.clientId]||0)+t.amount;});
@@ -738,7 +737,10 @@ function buildClients(){
           <h1 class="page-title" style="color:#0f172a;font-size:20px;font-weight:700;">거래처 관리</h1>
           <p style="color:#64748b;font-size:12px;margin-top:2px;">총 ${S.clients.length}개</p>
         </div>
-        <button onclick="openClientModal('add')" style="display:flex;align-items:center;gap:5px;background:#d97706;color:#fff;border:none;border-radius:8px;padding:8px 12px;font-size:13px;font-weight:700;cursor:pointer;flex-shrink:0;">${I.plus} <span class="hide-sm">거래처</span> 추가</button>
+        <div style="display:flex;gap:6px;">
+          <button onclick="openResetModal()" style="display:flex;align-items:center;gap:5px;background:#fff1f2;color:#dc2626;border:1px solid #fecdd3;border-radius:8px;padding:8px 10px;font-size:12px;font-weight:600;cursor:pointer;flex-shrink:0;">🗑 초기화</button>
+          <button onclick="openClientModal('add')" style="display:flex;align-items:center;gap:5px;background:#d97706;color:#fff;border:none;border-radius:8px;padding:8px 12px;font-size:13px;font-weight:700;cursor:pointer;flex-shrink:0;">${I.plus} <span class="hide-sm">거래처</span> 추가</button>
+        </div>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;">
         <div style="position:relative;flex:1;min-width:160px;">
@@ -921,13 +923,19 @@ function buildTransactions(){
 function _buildTxRow(tx,hideDate){
   const cl=S.clients.find(c=>c.id===tx.clientId);
   const color=tx.type==='매출'?'#16a34a':'#dc2626';
+  const cName=cl?.name||'?';
+  const safeAttr=cName.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
+  const canStat=!!(tx._napumId||_getWorkspaces().length>0);
+  const clientNameHtml=canStat
+    ?'<span class="stat-trigger" data-cn="'+safeAttr+'" style="cursor:pointer;border-bottom:1px dashed #d97706;color:#0f172a;" title="\uD83D\uDCCB \uB0A9\uD488 \uBA85\uC138\uD45C">'+esc(cName)+'</span>'
+    :'<span style="color:#0f172a;">'+esc(cName)+'</span>';
   return '<div class="hover-row" style="display:flex;align-items:center;padding:11px 14px;border-bottom:1px solid #f1f5f9;gap:8px;">'+
     (!hideDate?'<span class="col-date" style="color:#94a3b8;font-size:11px;">'+esc(tx.date)+'</span>':'')+
     '<div style="flex:1;min-width:0;">'+
-      '<div style="color:#0f172a;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(cl?.name||'?')+'</div>'+
+      '<div style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+clientNameHtml+'</div>'+
       '<div style="color:#94a3b8;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(tx.memo||'-')+'</div>'+
     '</div>'+
-    '<span class="col-type" style="font-size:11px;font-weight:600;color:'+color+';">'+(tx.type==='매출'?'매출':'매입')+'</span>'+
+    '<span class="col-type" style="font-size:11px;font-weight:600;color:'+color+';">'+esc(tx.type)+'</span>'+
     '<span class="col-amt" style="color:'+color+';font-size:12px;font-weight:600;">'+fmtW(tx.amount)+'</span>'+
     '<span class="col-tax hide-sm" style="color:#94a3b8;font-size:11px;">'+fmtW(tx.tax)+'</span>'+
     '<div class="col-status">'+statusBadge(tx.status,tx.id)+'</div>'+
@@ -939,7 +947,7 @@ function _buildTxRow(tx,hideDate){
 
 // ── RECEIVABLES VIEW ──────────────────────────────────────────────────────────
 function buildReceivables(){
-  const rec=S.transactions.filter(t=>t.status==='미수금'||(t.status==='미수금'&&(t.paidAmount||0)>0));
+  const rec=S.transactions.filter(t=>t.status==='미수금');
   const pay=S.transactions.filter(t=>t.status==='미지급금');
   const totalRec=rec.reduce((s,t)=>s+_txRemain(t),0);
   const totalPay=pay.reduce((s,t)=>s+_txRemain(t),0);
@@ -1669,7 +1677,7 @@ async function doSyncFromDelivery(){
           if(o.isVoid) return;
           if(!o.date||!o.total) return;
 
-          const napumClient=napumClients.find(c=>c.id===o.clientId);
+          const napumClient=napumClients.find(c=>String(c.id)===String(o.clientId));
           const crmName=o.clientName||(napumClient?.name||'');
           const crmClientId=nameToId[crmName];
           if(!crmClientId) return;
@@ -1678,13 +1686,24 @@ async function doSyncFromDelivery(){
           const memo=`[${ws.label}] ${o.note||(memoItems||'납품')}`;
           const amount=Number(o.total)||0;
           const tax=Math.round(amount*0.1);
-          const status=o.isPaid?'수금완료':'미수금';
+          // 납품 결제 상태 → CRM 상태 매핑
+          const napumPaid = o.isPaid;
+          const napumPartial = !o.isPaid && (o.paidAmount||0) > 0;
+          const status = napumPaid ? '수금완료' : '미수금';
           const napumKey=`${ws.id}:${o.id}`;
 
           if(napumIdToCrmId[napumKey]){
+            // 이미 연동된 전표 → 결제 상태 전체 업데이트
             S.transactions=S.transactions.map(t=>{
-              if(t.id===napumIdToCrmId[napumKey]) return {...t,status,amount,tax,memo};
-              return t;
+              if(t.id!==napumIdToCrmId[napumKey]) return t;
+              const next={...t,status,amount,tax,memo};
+              if(o.paidAmount) next.paidAmount=o.paidAmount;
+              else delete next.paidAmount;
+              if(o.paidAt)     next.paidAt=o.paidAt;
+              if(o.paidMethod) next.paidMethod=o.paidMethod;
+              if(o.paidMethodDetail) next.paidMethodDetail=o.paidMethodDetail;
+              else delete next.paidMethodDetail;
+              return next;
             });
             wsUpdTx++;totalUpdTx++;
           } else if(!synced.has(napumKey)){
@@ -1694,6 +1713,10 @@ async function doSyncFromDelivery(){
               type:'매출',amount,tax,memo,status,
               _napumId:napumKey
             };
+            if(o.paidAmount) newT.paidAmount=o.paidAmount;
+            if(o.paidAt)     newT.paidAt=o.paidAt;
+            if(o.paidMethod) newT.paidMethod=o.paidMethod;
+            if(o.paidMethodDetail) newT.paidMethodDetail=o.paidMethodDetail;
             S.transactions=[...S.transactions,newT];
             synced.add(napumKey);
             wsNewTx++;totalNewTx++;
@@ -1733,58 +1756,59 @@ async function doSyncFromDelivery(){
 }
 
 // ── 결제 수단 탭 헬퍼 ─────────────────────────────────────────────────────────
-function _methodTab(cur,key,label,color){
+function _methodTab(cur,key,label,color,targetModal){
   const a=cur===key;
-  return `<button onclick="M.qpModal?M.qpModal.method='${key}':M.batchPayModal.method='${key}';renderModals()"
+  const fn=targetModal==='qp'
+    ?`M.qpModal.method='${key}';renderModals()`
+    :`M.batchPayModal.method='${key}';renderModals()`;
+  return `<button onclick="${fn}"
     style="flex:1;padding:8px 0;border-radius:8px;border:1px solid ${a?color:'#e2e8f0'};background:${a?color+'20':'#f8fafc'};color:${a?color:'#64748b'};font-size:12px;font-weight:${a?700:400};cursor:pointer;">${label}</button>`;
 }
-function _methodTabs(cur){
+function _methodTabs(cur,targetModal){
   return `<div style="display:flex;gap:6px;">
-    ${_methodTab(cur,'cash','💵 현금','#16a34a')}
-    ${_methodTab(cur,'transfer','🏦 계좌이체','#1d4ed8')}
-    ${_methodTab(cur,'mixed','🔀 혼합','#7c3aed')}
+    ${_methodTab(cur,'cash','💵 현금','#16a34a',targetModal)}
+    ${_methodTab(cur,'transfer','🏦 계좌이체','#1d4ed8',targetModal)}
+    ${_methodTab(cur,'mixed','🔀 혼합','#7c3aed',targetModal)}
   </div>`;
 }
-function _mixedInputs(m,prefix){
+function _mixedInputs(m,targetModal){
   if(m!=='mixed') return '';
-  const mo=M.qpModal||M.batchPayModal;
+  // targetModal: 'qp' → M.qpModal.mixCash/mixTransfer, 'bp' → M.batchPayModal.mixCash/mixTransfer
+  const mo=targetModal==='qp'?M.qpModal:M.batchPayModal;
+  const pfx=targetModal==='qp'?'qpModal':'batchPayModal';
   return `
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:8px;">
       <div>
         <div style="font-size:11px;color:#64748b;margin-bottom:4px;">💵 현금</div>
-        <input type="number" value="${mo[prefix+'Cash']||''}" placeholder="0"
+        <input type="number" value="${mo.mixCash||''}" placeholder="0"
           style="${ISX}font-size:13px;" ${FB}
-          oninput="(M.qpModal||M.batchPayModal)['${prefix}Cash']=Number(this.value)||0;_syncMixedTotal('${prefix}')">
+          oninput="M.${pfx}.mixCash=Number(this.value)||0;_syncMixedTotal('${targetModal}')">
       </div>
       <div>
         <div style="font-size:11px;color:#64748b;margin-bottom:4px;">🏦 계좌이체</div>
-        <input type="number" value="${mo[prefix+'Transfer']||''}" placeholder="0"
+        <input type="number" value="${mo.mixTransfer||''}" placeholder="0"
           style="${ISX}font-size:13px;" ${FB}
-          oninput="(M.qpModal||M.batchPayModal)['${prefix}Transfer']=Number(this.value)||0;_syncMixedTotal('${prefix}')">
+          oninput="M.${pfx}.mixTransfer=Number(this.value)||0;_syncMixedTotal('${targetModal}')">
       </div>
     </div>`;
 }
-function _syncMixedTotal(prefix){
-  const mo=M.qpModal||M.batchPayModal;
-  const total=(mo[prefix+'Cash']||0)+(mo[prefix+'Transfer']||0);
-  mo.amount=total;
-  // 미리보기만 갱신 (전체 리렌더 없이)
-  const el=document.getElementById('qp_preview')||document.getElementById('bp_preview');
-  if(el) _updatePayPreview(prefix);
+function _syncMixedTotal(targetModal){
+  const mo=targetModal==='qp'?M.qpModal:M.batchPayModal;
+  mo.amount=(mo.mixCash||0)+(mo.mixTransfer||0);
+  _updatePayPreview(targetModal);
 }
-function _updatePayPreview(prefix){
-  const mo=M.qpModal||M.batchPayModal;
-  if(M.qpModal){
-    const t=S.transactions.find(x=>x.id===mo.txId);
-    if(!t) return;
+function _updatePayPreview(targetModal){
+  if(targetModal==='qp'){
+    const mo=M.qpModal; if(!mo) return;
+    const t=S.transactions.find(x=>x.id===mo.txId); if(!t) return;
     const remain=_txRemain(t);
-    const amt=mo.amount||0;
-    const el=document.getElementById('qp_preview');
-    if(!el) return;
+    const amt=mo.method==='mixed'?(mo.mixCash||0)+(mo.mixTransfer||0):(mo.amount||0);
+    const el=document.getElementById('qp_preview'); if(!el) return;
     if(amt<=0){el.style.display='none';return;}
     el.style.display='block';
-    if(amt>=remain) el.innerHTML=`<span style="color:#16a34a;font-weight:600;">✅ 전액 수금 완료</span>`;
-    else el.innerHTML=`<span style="color:#b45309;">💳 부분 수금 · 잔여 <b>${fmtW(remain-amt)}</b></span>`;
+    el.innerHTML=amt>=remain
+      ?`<span style="color:#16a34a;font-weight:600;">✅ 전액 수금 완료</span>`
+      :`<span style="color:#b45309;">💳 부분 수금 · 잔여 <b>${fmtW(remain-amt)}</b></span>`;
   } else {
     _renderBatchPreview();
   }
@@ -1811,6 +1835,7 @@ function buildQuickPayModal(){
   const isSales=t.status==='미수금';
   const accentColor=isSales?'#16a34a':'#1d4ed8';
   const label=isSales?'수금':'지급';
+  const previewAmt=mo.method==='mixed'?(mo.mixCash||0)+(mo.mixTransfer||0):(mo.amount||0);
 
   const quickBtns=[
     {label:'전액',val:remain},
@@ -1856,12 +1881,12 @@ function buildQuickPayModal(){
 
           <div style="margin-bottom:12px;">
             <div style="font-size:12px;color:#64748b;margin-bottom:6px;">결제 수단</div>
-            ${_methodTabs(mo.method)}
-            ${_mixedInputs(mo.method,'')}
+            ${_methodTabs(mo.method,'qp')}
+            ${_mixedInputs(mo.method,'qp')}
           </div>
 
-          <div id="qp_preview" style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px;font-size:12px;margin-bottom:12px;display:${(mo.amount||0)>0?'block':'none'};">
-            ${(mo.amount||0)>0?((mo.amount>=remain)?'<span style="color:#16a34a;font-weight:600;">✅ 전액 수금 완료</span>':`<span style="color:#b45309;">💳 부분 수금 · 잔여 <b>${fmtW(remain-(mo.amount||0))}</b></span>`):''}
+          <div id="qp_preview" style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px;font-size:12px;margin-bottom:12px;display:${previewAmt>0?'block':'none'};">
+            ${previewAmt>0?(previewAmt>=remain?'<span style="color:#16a34a;font-weight:600;">✅ 전액 수금 완료</span>':`<span style="color:#b45309;">💳 부분 수금 · 잔여 <b>${fmtW(remain-previewAmt)}</b></span>`):''}
           </div>
 
           <div style="display:flex;gap:8px;">
@@ -1873,6 +1898,43 @@ function buildQuickPayModal(){
     </div>`;
 }
 
+// ── 납품 관리 역방향 패치 ────────────────────────────────────────────────────
+// CRM 결제 처리 후 → 납품 관리 Firebase의 order 결제 필드 동기화
+async function _patchNapumOrder(napumKey, patchObj){
+  // napumKey = "wsId:orderId"
+  if(!napumKey||!napumKey.includes(':')) return;
+  const sep=napumKey.indexOf(':');
+  const wsId=napumKey.slice(0,sep);
+  const orderId=napumKey.slice(sep+1);
+  if(!wsId||!orderId) return;
+
+  try{
+    if(!_fbReady) await initFirebase();
+    let napumApp;
+    try{ napumApp=firebase.app('napum'); }
+    catch(e){ napumApp=firebase.initializeApp(NAPUM_FB_CFG,'napum'); }
+    const ref=napumApp.database().ref(`workspaces/${wsId}/orders/${orderId}`);
+    await ref.update(patchObj);
+  } catch(e){
+    console.warn('납품 역방향 패치 실패:', e.message);
+    // 실패해도 CRM 처리는 정상 완료로 유지
+  }
+}
+
+function _buildNapumPatch(crmTx){
+  const paidAmount = crmTx.paidAmount || 0;
+  const isFull = crmTx.status === '수금완료';
+  const patch = {
+    isPaid: isFull,
+    paidAmount: paidAmount,
+    paidAt: crmTx.paidAt || new Date().toISOString(),
+    paidMethod: crmTx.paidMethod || 'cash',
+    updatedAt: new Date().toISOString(),
+  };
+  if(crmTx.paidMethodDetail) patch.paidMethodDetail = crmTx.paidMethodDetail;
+  return patch;
+}
+
 function confirmQuickPay(){
   const mo=M.qpModal;
   const t=S.transactions.find(x=>x.id===mo.txId);
@@ -1880,22 +1942,34 @@ function confirmQuickPay(){
   const total=t.amount+t.tax;
   const already=t.paidAmount||0;
   const remain=total-already;
-  const amt=mo.method==='mixed'?(mo.cash||0)+(mo.transfer||0):(mo.amount||0);
+  const amt=mo.method==='mixed'?(mo.mixCash||0)+(mo.mixTransfer||0):(mo.amount||0);
   if(amt<=0){showToast('금액을 입력하세요.');return;}
   if(amt>remain){showToast('잔여금액보다 많습니다.');return;}
 
   const isFull=amt>=remain;
-  const paidMethodDetail=mo.method==='mixed'?{cash:mo.cash||0,transfer:mo.transfer||0}:null;
+  const paidMethodDetail=mo.method==='mixed'?{cash:mo.mixCash||0,transfer:mo.mixTransfer||0}:null;
+  const paidAt=new Date().toISOString();
+  let updatedTx=null;
   S.transactions=S.transactions.map(tx=>{
     if(tx.id!==mo.txId) return tx;
-    const next={...tx,paidAmount:(already+amt),paidAt:new Date().toISOString(),paidMethod:mo.method};
+    const next={...tx,paidAmount:(already+amt),paidAt,paidMethod:mo.method};
     if(paidMethodDetail) next.paidMethodDetail=paidMethodDetail;
     if(isFull) next.status=tx.status==='미수금'?'수금완료':'지급완료';
+    updatedTx=next;
     return next;
   });
   saveTX();render();closeQuickPay();
   const icon=mo.method==='transfer'?'🏦':mo.method==='mixed'?'🔀':'💵';
   showToast(icon+' '+(isFull?'완납 처리':'부분 수금 처리'));
+
+  // 납품 관리 역방향 패치 (딜레이로 토스트 겹침 방지)
+  if(updatedTx&&updatedTx._napumId){
+    setTimeout(()=>{
+      _patchNapumOrder(updatedTx._napumId, _buildNapumPatch(updatedTx))
+        .then(()=>showToast('📦 납품 관리에도 반영됨'))
+        .catch(()=>{});
+    },1200);
+  }
 }
 
 // ── 일괄 수금 모달 ────────────────────────────────────────────────────────────
@@ -1917,7 +1991,7 @@ function _renderBatchPreview(){
   const pending=S.transactions
     .filter(t=>t.clientId===mo.clientId&&t.status==='미수금')
     .sort((a,b)=>a.date.localeCompare(b.date));
-  const amt=mo.method==='mixed'?(mo.cash||0)+(mo.transfer||0):(mo.amount||0);
+  const amt=mo.method==='mixed'?(mo.mixCash||0)+(mo.mixTransfer||0):(mo.amount||0);
   if(amt<=0){el.style.display='none';return;}
   el.style.display='block';
   let remain=amt;
@@ -1978,8 +2052,8 @@ function buildBatchPayModal(){
 
           <div style="margin-bottom:12px;">
             <div style="font-size:12px;color:#64748b;margin-bottom:6px;">결제 수단</div>
-            ${_methodTabs(mo.method)}
-            ${_mixedInputs(mo.method,'bp_')}
+            ${_methodTabs(mo.method,'bp')}
+            ${_mixedInputs(mo.method,'bp')}
           </div>
 
           <div style="font-size:12px;color:#64748b;margin-bottom:6px;">배분 미리보기</div>
@@ -1999,16 +2073,16 @@ function confirmBatchPay(){
   const pending=S.transactions
     .filter(t=>t.clientId===mo.clientId&&t.status==='미수금')
     .sort((a,b)=>a.date.localeCompare(b.date));
-  const amt=mo.method==='mixed'?(mo.bpCash||0)+(mo.bpTransfer||0):(mo.amount||0);
+  const amt=mo.method==='mixed'?(mo.mixCash||0)+(mo.mixTransfer||0):(mo.amount||0);
   if(amt<=0){showToast('금액을 입력하세요.');return;}
 
   const paidAt=new Date().toISOString();
-  const paidMethodDetail=mo.method==='mixed'?{cash:mo.bpCash||0,transfer:mo.bpTransfer||0}:null;
+  const paidMethodDetail=mo.method==='mixed'?{cash:mo.mixCash||0,transfer:mo.mixTransfer||0}:null;
   let remain=amt;
-  const updIds=new Set();
+  const updatedTxs=[];
 
   S.transactions=S.transactions.map(tx=>{
-    if(!updIds.has(tx.id)&&pending.find(p=>p.id===tx.id)&&remain>0){
+    if(pending.find(p=>p.id===tx.id)&&remain>0){
       const due=_txRemain(tx);
       const apply=Math.min(due,remain);
       remain-=apply;
@@ -2016,7 +2090,7 @@ function confirmBatchPay(){
       const next={...tx,paidAmount:(tx.paidAmount||0)+apply,paidAt,paidMethod:mo.method};
       if(paidMethodDetail) next.paidMethodDetail=paidMethodDetail;
       if(isFull) next.status='수금완료';
-      updIds.add(tx.id);
+      updatedTxs.push(next);
       return next;
     }
     return tx;
@@ -2024,7 +2098,495 @@ function confirmBatchPay(){
 
   saveTX();render();closeBatchPay();
   const icon=mo.method==='transfer'?'🏦':mo.method==='mixed'?'🔀':'💵';
-  showToast(`${icon} ${updIds.size}건 수금 처리`);
+  showToast(`${icon} ${updatedTxs.length}건 수금 처리`);
+
+  // 납품 관리 역방향 패치 (딜레이로 토스트 겹침 방지)
+  const napumTxs=updatedTxs.filter(t=>t._napumId);
+  if(napumTxs.length>0){
+    setTimeout(()=>{
+      Promise.all(napumTxs.map(t=>_patchNapumOrder(t._napumId,_buildNapumPatch(t))))
+        .then(()=>showToast(`📦 납품 관리 ${napumTxs.length}건 반영됨`))
+        .catch(()=>{});
+    },1200);
+  }
+}
+
+// ── 납품 명세표 팝업 ──────────────────────────────────────────────────────────
+function openStatModal(clientName){
+  if(!clientName||clientName==='?') return;
+  M.statModal={clientName, month:thisMonth(), step:'loading', orders:[], error:null};
+  renderModals();
+  _loadStatOrders();
+}
+function closeStatModal(){M.statModal=null;renderModals();}
+
+function setStatMonth(m){
+  M.statModal.month=m;
+  M.statModal.step='loading';
+  renderModals();
+  _loadStatOrders();
+}
+
+async function _loadStatOrders(){
+  const sm=M.statModal;
+  if(!sm) return;
+
+  // 워크스페이스 목록: 등록된 것 + _napumId에서 추출한 것 병합
+  let workspaces=[..._getWorkspaces()];
+  const wsFromTx=new Map(); // id → label
+  workspaces.forEach(w=>wsFromTx.set(w.id,w.label));
+
+  // 이 거래처의 _napumId 보유 거래에서 wsId 추출
+  const clientTxs=S.transactions.filter(t=>{
+    const cl=S.clients.find(c=>c.id===t.clientId);
+    return (cl?.name||'')===sm.clientName && t._napumId;
+  });
+  clientTxs.forEach(t=>{
+    const sep=t._napumId.indexOf(':');
+    if(sep>0){
+      const wsId=t._napumId.slice(0,sep);
+      if(!wsFromTx.has(wsId)){
+        wsFromTx.set(wsId,wsId);
+        workspaces.push({id:wsId,label:wsId});
+      }
+    }
+  });
+
+  if(!workspaces.length){
+    M.statModal={...sm,step:'error',error:'워크스페이스가 등록되지 않았습니다.\n사이드바 메뉴 → 납품 관리 연동에서 추가하세요.'};
+    renderModals();return;
+  }
+
+  try{
+    if(!_fbReady) await initFirebase();
+    let napumApp;
+    try{ napumApp=firebase.app('napum'); }
+    catch(e){ napumApp=firebase.initializeApp(NAPUM_FB_CFG,'napum'); }
+    const napumDb=napumApp.database();
+
+    const allOrders=[];
+    await Promise.all(workspaces.map(async ws=>{
+      try{
+        const snap=await napumDb.ref(`workspaces/${ws.id}/orders`).get();
+        const orders=Object.values(snap.val()||{});
+        orders.forEach(o=>{
+          if((o.clientName||'')===sm.clientName&&!o.isVoid){
+            allOrders.push({...o,_wsLabel:ws.label,_wsId:ws.id});
+          }
+        });
+      }catch(e){ /* 워크스페이스 오류 무시 */ }
+    }));
+
+    allOrders.sort((a,b)=>a.date.localeCompare(b.date));
+    if(M.statModal) M.statModal={...M.statModal,step:'done',orders:allOrders,error:null};
+    renderModals();
+  }catch(err){
+    if(M.statModal) M.statModal={...M.statModal,step:'error',error:err.message};
+    renderModals();
+  }
+}
+
+function buildStatModal(){
+  const sm=M.statModal;
+  if(!sm) return '';
+  const {clientName,month,step,orders,error}=sm;
+
+  // 월 옵션 생성 (데이터 있는 월 + 최근 6개월)
+  const monthSet=new Set();
+  const cur=thisMonth();
+  for(let i=0;i<6;i++){
+    let m=cur;
+    for(let j=0;j<i;j++) m=prevMonth(m);
+    monthSet.add(m);
+  }
+  orders.forEach(o=>{ if(o.date) monthSet.add(o.date.slice(0,7)); });
+  const monthList=[...monthSet].sort().reverse();
+
+  const monthSel=`<select onchange="setStatMonth(this.value)"
+    style="border:1px solid #e2e8f0;border-radius:8px;padding:5px 10px;font-size:13px;color:#0f172a;background:#fff;cursor:pointer;font-weight:600;">
+    ${monthList.map(m=>`<option value="${m}"${m===month?' selected':''}>${fmtMonth(m)}</option>`).join('')}
+  </select>`;
+
+  let body='';
+  if(step==='loading'){
+    body=`<div style="text-align:center;padding:40px 0;">
+      <div style="width:40px;height:40px;border:3px solid #e2e8f0;border-top-color:#d97706;border-radius:50%;animation:sp .8s linear infinite;margin:0 auto 14px;"></div>
+      <div style="color:#64748b;font-size:13px;">납품 내역을 불러오는 중...</div>
+    </div>`;
+  } else if(step==='error'){
+    body=`<div style="background:#fff1f2;border:1px solid #fecdd3;border-radius:10px;padding:16px;text-align:center;color:#dc2626;font-size:13px;">
+      ⚠️ ${esc(error||'오류가 발생했습니다.')}
+    </div>`;
+  } else {
+    // 데이터 계산
+    const monthStart=month+'-01';
+    const filt=orders.filter(o=>o.date&&o.date.startsWith(month));
+    const carryOrders=orders.filter(o=>o.date&&o.date<monthStart&&!o.isPaid);
+
+    const _eff=o=>o.isPaid&&(o.discount||0)>0?o.total-o.discount:o.total;
+    const _paid=o=>o.isPaid?(o.paidAmount||o.total):((o.paidAmount||0));
+
+    const monthTotal=filt.reduce((s,o)=>s+_eff(o),0);
+    const monthPaid=filt.reduce((s,o)=>s+_paid(o),0);
+    const monthUnpaid=monthTotal-monthPaid;
+    const carryAmt=carryOrders.reduce((s,o)=>s+(o.total-(o.paidAmount||0)),0);
+    const grandUnpaid=carryAmt+monthUnpaid;
+
+    // 요약 카드
+    const summaryRows=[
+      carryAmt>0?{label:'⏩ 전월 이월',val:fmtW(carryAmt),color:'#b45309',bg:'#fefce8',bd:'#fef08a'}:null,
+      {label:'당월 매출',val:fmtW(monthTotal),color:'#16a34a',bg:'#f0fdf4',bd:'#bbf7d0'},
+      {label:'수금액',val:fmtW(monthPaid),color:'#1d4ed8',bg:'#eff6ff',bd:'#bfdbfe'},
+      {label:'청구 금액',val:fmtW(grandUnpaid),color:grandUnpaid>0?'#dc2626':'#16a34a',bg:grandUnpaid>0?'#fff1f2':'#f0fdf4',bd:grandUnpaid>0?'#fecdd3':'#bbf7d0'},
+    ].filter(Boolean).map(({label,val,color,bg,bd})=>`
+      <div style="background:${bg};border:1px solid ${bd};border-radius:8px;padding:10px 12px;display:flex;justify-content:space-between;align-items:center;">
+        <span style="color:#64748b;font-size:12px;">${label}</span>
+        <span style="color:${color};font-weight:700;font-size:14px;">${val}</span>
+      </div>`).join('');
+
+    // 이월 행
+    const carryRows=carryOrders.map(o=>{
+      const remain=o.total-(o.paidAmount||0);
+      const partial=(o.paidAmount||0)>0;
+      return `<tr style="background:#fefce8;">
+        <td style="color:#b45309;font-size:11px;white-space:nowrap;">${esc(o.date)}</td>
+        <td style="font-size:11px;">${esc(_fmtStatItems(o))}</td>
+        <td style="text-align:right;font-size:12px;font-weight:600;color:#b45309;white-space:nowrap;">${fmtW(o.total)}</td>
+        <td style="text-align:center;">
+          <span style="font-size:10px;background:#fef3c7;color:#b45309;border-radius:9999px;padding:2px 6px;font-weight:700;">이월</span>
+          ${partial?`<div style="font-size:9px;color:#1d4ed8;">+${fmtW(o.paidAmount)}</div>`:''}
+        </td>
+      </tr>`;
+    }).join('');
+
+    // 당월 행
+    const monthRows=filt.length===0
+      ?`<tr><td colspan="4" style="text-align:center;color:#94a3b8;padding:16px;font-size:12px;">당월 내역 없음</td></tr>`
+      :filt.map(o=>{
+        const partial=!o.isPaid&&(o.paidAmount||0)>0;
+        const multiWs=_getWorkspaces().length>1;
+        const wsBadge=multiWs?`<span style="font-size:9px;background:#e0e7ff;color:#4f46e5;border-radius:4px;padding:1px 4px;margin-left:3px;">${esc(o._wsLabel||'')}</span>`:'';
+        const statBadge=o.isPaid
+          ?`<span style="font-size:10px;background:#dcfce7;color:#16a34a;border-radius:9999px;padding:2px 6px;font-weight:700;">${o.discount>0?'✂️할인':'✅완납'}</span>`
+          :partial
+          ?`<span style="font-size:10px;background:#eff6ff;color:#1d4ed8;border-radius:9999px;padding:2px 6px;font-weight:700;">💳부분</span>`
+          :`<span style="font-size:10px;background:#fee2e2;color:#dc2626;border-radius:9999px;padding:2px 6px;font-weight:700;">미수</span>`;
+        const partialDetail=partial?`<tr style="background:#f0f9ff;">
+          <td colspan="4" style="padding:4px 8px 6px 20px;font-size:10px;color:#1d4ed8;">
+            💳 수금 ${fmtW(o.paidAmount)} · 잔여 ${fmtW(o.total-(o.paidAmount||0))}
+            ${o.paidMethod==='transfer'?'🏦':o.paidMethod==='mixed'?'🔀':o.paidMethod==='cash'?'💵':''}
+            ${o.paidAt?`· ${o.paidAt.slice(0,10)}`:''}
+          </td>
+        </tr>`:'';
+        return `<tr style="border-bottom:1px solid #f1f5f9;${!o.isPaid?'background:#fffbeb;':''}">
+          <td style="font-size:11px;white-space:nowrap;color:#64748b;">${esc(o.date)}</td>
+          <td style="font-size:11px;">${esc(_fmtStatItems(o))}${wsBadge}</td>
+          <td style="text-align:right;font-size:12px;font-weight:600;white-space:nowrap;">${fmtW(o.total)}</td>
+          <td style="text-align:center;">${statBadge}</td>
+        </tr>${partialDetail}`;
+      }).join('');
+
+    body=`
+      ${summaryRows?`<div style="display:flex;flex-direction:column;gap:6px;margin-bottom:16px;">${summaryRows}</div>`:''}
+      <div style="overflow-x:auto;border-radius:10px;border:1px solid #e2e8f0;">
+        <table style="width:100%;border-collapse:collapse;min-width:280px;">
+          <thead>
+            <tr style="background:#f8fafc;">
+              <th style="padding:8px 10px;text-align:left;font-size:11px;color:#64748b;border-bottom:1px solid #e2e8f0;">날짜</th>
+              <th style="padding:8px 10px;text-align:left;font-size:11px;color:#64748b;border-bottom:1px solid #e2e8f0;">품목</th>
+              <th style="padding:8px 10px;text-align:right;font-size:11px;color:#64748b;border-bottom:1px solid #e2e8f0;">금액</th>
+              <th style="padding:8px 10px;text-align:center;font-size:11px;color:#64748b;border-bottom:1px solid #e2e8f0;">상태</th>
+            </tr>
+          </thead>
+          <tbody>${carryRows}${monthRows}</tbody>
+          ${filt.length>0?`<tfoot>
+            <tr style="background:#f8fafc;border-top:2px solid #e2e8f0;">
+              <td colspan="2" style="padding:9px 10px;font-size:12px;color:#64748b;font-weight:600;">합계</td>
+              <td style="padding:9px 10px;text-align:right;font-size:13px;font-weight:700;color:#16a34a;">${fmtW(monthTotal)}</td>
+              <td></td>
+            </tr>
+          </tfoot>`:''}
+        </table>
+      </div>
+      ${orders.length===0?`<div style="text-align:center;color:#94a3b8;font-size:12px;margin-top:12px;">연동된 납품 내역이 없습니다.<br>납품 관리 동기화 후 다시 확인하세요.</div>`:''}`;
+  }
+
+  return `
+    <div onclick="closeStatModal()" style="position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:50;display:flex;align-items:flex-end;justify-content:center;padding-bottom:env(safe-area-inset-bottom);">
+      <div onclick="event.stopPropagation()" style="background:#fff;border-radius:18px 18px 0 0;width:100%;max-width:520px;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 -8px 40px rgba(0,0,0,.18);">
+        <div style="width:36px;height:4px;background:#e2e8f0;border-radius:2px;margin:10px auto 0;flex-shrink:0;"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px 12px;border-bottom:1px solid #f1f5f9;flex-shrink:0;">
+          <div>
+            <div style="font-weight:700;color:#0f172a;font-size:15px;">📋 ${esc(clientName)}</div>
+            <div style="color:#94a3b8;font-size:11px;margin-top:1px;">납품 거래명세표</div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;">
+            ${step==='done'?monthSel:''}
+            <button onclick="closeStatModal()" style="background:none;border:none;cursor:pointer;color:#94a3b8;">${I.x}</button>
+          </div>
+        </div>
+        <div style="overflow-y:auto;padding:16px 18px;-webkit-overflow-scrolling:touch;">${body}</div>
+      </div>
+    </div>`;
+}
+
+function _fmtStatItems(o){
+  const items=o.items||[];
+  if(!items.length) return o.note||'(품목 없음)';
+  return items.map(i=>`${i.name}${(i.qty||1)>1?` ×${i.qty}`:''}`).join(', ');
+}
+
+// ── 거래처 초기화 모달 ────────────────────────────────────────────────────────
+function openResetModal(){
+  M.resetModal={step:'select', scope:'all', targetClient:null, confirmText:'', error:null};
+  renderModals();
+}
+function _onResetInput(val){
+  if(!M.resetModal) return;
+  M.resetModal.confirmText=val;
+  M.resetModal.error=null;
+  // 버튼 상태 DOM 직접 업데이트 (리렌더 없이 키보드 유지)
+  const btn=document.getElementById('resetExecBtn');
+  if(!btn) return;
+  const rm=M.resetModal;
+  const tc=rm.targetClient?S.clients.find(c=>c.id===rm.targetClient):null;
+  const kw=(tc?tc.name:'초기화').trim().normalize('NFC');
+  const match=val.trim().normalize('NFC')===kw;
+  btn.style.opacity=match?'1':'0.5';
+  btn.style.background=match?'#dc2626':'#f87171';
+  btn.style.cursor=match?'pointer':'default';
+}
+
+function closeResetModal(){M.resetModal=null;renderModals();}
+
+function buildResetModal(){
+  const rm=M.resetModal;
+
+  // 통계 계산
+  const totalClients=S.clients.length;
+  const napumTx=S.transactions.filter(t=>t._napumId).length;
+  const localTx=S.transactions.length-napumTx;
+  // keyword를 상단에서 미리 계산 (버튼 렌더링에서도 사용)
+  const _tc=rm.targetClient?S.clients.find(c=>c.id===rm.targetClient):null;
+  const keyword=_tc?_tc.name:'초기화';
+  const napumClients=new Set(
+    S.transactions.filter(t=>t._napumId).map(t=>t.clientId)
+  );
+  const napumOnlyClients=S.clients.filter(c=>
+    napumClients.has(c.id)&&
+    !S.transactions.filter(t=>t.clientId===c.id&&!t._napumId).length
+  ).length;
+
+  let body='';
+
+  if(rm.step==='select'){
+    const scopeOpts=[
+      {
+        key:'all',
+        icon:'💥',
+        label:'전체 초기화',
+        desc:`거래처 ${totalClients}개 + 거래 내역 ${S.transactions.length}건 모두 삭제`,
+        color:'#dc2626', bg:'#fff1f2', bd:'#fecdd3'
+      },
+      {
+        key:'txonly',
+        icon:'🗒',
+        label:'거래 내역만 삭제',
+        desc:`거래처 목록 유지 · 거래 내역 ${S.transactions.length}건만 삭제`,
+        color:'#b45309', bg:'#fefce8', bd:'#fef08a'
+      },
+      {
+        key:'localonly',
+        icon:'🔒',
+        label:'로컬 거래만 삭제',
+        desc:`납품 연동 거래(${napumTx}건) 제외 · 직접 입력 거래(${localTx}건)만 삭제`,
+        color:'#1d4ed8', bg:'#eff6ff', bd:'#bfdbfe'
+      },
+      {
+        key:'client',
+        icon:'👤',
+        label:'특정 거래처만',
+        desc:'거래처 1개와 연관 거래 내역 선택 삭제',
+        color:'#7c3aed', bg:'#fdf4ff', bd:'#e9d5ff'
+      },
+    ].map(({key,icon,label,desc,color,bg,bd})=>{
+      const a=rm.scope===key;
+      return `<button onclick="M.resetModal.scope='${key}';renderModals()"
+        style="width:100%;text-align:left;padding:12px 14px;border-radius:10px;border:2px solid ${a?color:bd};background:${a?bg:'#fff'};cursor:pointer;margin-bottom:8px;transition:all .15s;">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:18px;">${icon}</span>
+          <div>
+            <div style="font-size:13px;font-weight:700;color:${a?color:'#0f172a'};">${label}</div>
+            <div style="font-size:11px;color:#64748b;margin-top:2px;">${desc}</div>
+          </div>
+          ${a?`<span style="margin-left:auto;color:${color};font-size:16px;">●</span>`:''}
+        </div>
+      </button>`;
+    }).join('');
+
+    // 특정 거래처 선택
+    const clientSelect = rm.scope==='client' ? `
+      <div style="margin-top:4px;">
+        <div style="font-size:12px;color:#64748b;margin-bottom:6px;">삭제할 거래처 선택</div>
+        <select onchange="M.resetModal.targetClient=Number(this.value)||null;renderModals()"
+          style="width:100%;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;font-size:13px;color:#0f172a;background:#fff;">
+          <option value="">-- 거래처 선택 --</option>
+          ${S.clients.map(c=>{
+            const txCount=S.transactions.filter(t=>t.clientId===c.id).length;
+            return `<option value="${c.id}"${rm.targetClient===c.id?' selected':''}>${esc(c.name)} (거래 ${txCount}건)</option>`;
+          }).join('')}
+        </select>
+      </div>` : '';
+
+    // 납품 연동 주의 문구
+    const napumWarn = napumTx>0 ? `
+      <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 12px;margin-top:12px;font-size:11px;color:#1d4ed8;">
+        💡 납품 관리 연동 거래 <b>${napumTx}건</b>은 CRM에서 삭제해도 납품 관리 앱 데이터에는 영향 없습니다.
+      </div>` : '';
+
+    body=`
+      <div style="background:#fff1f2;border:1px solid #fecdd3;border-radius:10px;padding:12px 14px;margin-bottom:16px;">
+        <div style="font-size:13px;font-weight:700;color:#dc2626;margin-bottom:4px;">⚠️ 주의</div>
+        <div style="font-size:12px;color:#64748b;">삭제된 데이터는 복구할 수 없습니다.<br>납품 관리 앱 원본 데이터에는 영향을 주지 않습니다.</div>
+      </div>
+      <div style="font-size:12px;font-weight:600;color:#475569;margin-bottom:8px;">삭제 범위 선택</div>
+      ${scopeOpts}
+      ${clientSelect}
+      ${napumWarn}`;
+
+  } else if(rm.step==='confirm'){
+    const scope=rm.scope;
+    const tc=_tc;
+    const txCount=scope==='all'?S.transactions.length
+      :scope==='txonly'?S.transactions.length
+      :scope==='localonly'?localTx
+      :(tc?S.transactions.filter(t=>t.clientId===tc.id).length:0);
+    const clientCount=scope==='all'?totalClients:scope==='client'&&tc?1:0;
+
+    body=`
+      <div style="background:#fff1f2;border:2px solid #fecdd3;border-radius:10px;padding:14px;margin-bottom:16px;text-align:center;">
+        <div style="font-size:24px;margin-bottom:6px;">🚨</div>
+        <div style="font-size:14px;font-weight:700;color:#dc2626;margin-bottom:8px;">정말 삭제하시겠습니까?</div>
+        <div style="display:flex;justify-content:center;gap:16px;flex-wrap:wrap;">
+          ${clientCount>0?`<div><div style="font-size:20px;font-weight:700;color:#dc2626;">${clientCount}개</div><div style="font-size:11px;color:#94a3b8;">거래처</div></div>`:''}
+          <div><div style="font-size:20px;font-weight:700;color:#b45309;">${txCount}건</div><div style="font-size:11px;color:#94a3b8;">거래 내역</div></div>
+        </div>
+      </div>
+      <div style="margin-bottom:14px;">
+        <div style="font-size:12px;color:#64748b;margin-bottom:6px;">
+          확인을 위해 아래에 <b style="color:#dc2626;">${esc(keyword)}</b> 를 입력하세요
+        </div>
+        <input id="resetConfirmInput" type="text" value="${esc(rm.confirmText||'')}" placeholder="${esc(keyword)}"
+          style="${ISX}font-size:14px;border-color:${rm.error?'#dc2626':'#e2e8f0'};" ${FB}
+          oninput="_onResetInput(this.value)">
+        ${rm.error?`<div style="color:#dc2626;font-size:11px;margin-top:4px;">${esc(rm.error)}</div>`:''}
+      </div>`;
+  }
+
+  const isSelect=rm.step==='select';
+  const canNext=isSelect&&(rm.scope!=='client'||rm.targetClient!=null);
+
+  return `
+    <div onclick="closeResetModal()" style="position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:50;display:flex;align-items:flex-end;justify-content:center;padding-bottom:env(safe-area-inset-bottom);">
+      <div onclick="event.stopPropagation()" style="background:#fff;border-radius:18px 18px 0 0;width:100%;max-width:480px;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 -8px 40px rgba(0,0,0,.2);">
+        <div style="width:36px;height:4px;background:#e2e8f0;border-radius:2px;margin:10px auto 0;flex-shrink:0;"></div>
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px 12px;border-bottom:1px solid #f1f5f9;flex-shrink:0;">
+          <div>
+            <div style="font-weight:700;color:#0f172a;font-size:15px;">🗑 거래처 초기화</div>
+            <div style="color:#94a3b8;font-size:11px;margin-top:1px;">CRM 앱 데이터만 삭제 · 납품 관리 앱 영향 없음</div>
+          </div>
+          <button onclick="closeResetModal()" style="background:none;border:none;cursor:pointer;color:#94a3b8;">${I.x}</button>
+        </div>
+        <div style="overflow-y:auto;padding:16px 18px;flex:1;-webkit-overflow-scrolling:touch;">${body}</div>
+        <div style="display:flex;gap:8px;padding:12px 18px;border-top:1px solid #f1f5f9;flex-shrink:0;">
+          ${isSelect
+            ?`<button onclick="closeResetModal()" style="flex:1;padding:11px;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:10px;font-size:13px;cursor:pointer;">취소</button>
+              <button onclick="goResetConfirm()" ${canNext?'':'disabled'}
+                style="flex:2;padding:11px;border:none;background:${canNext?'#dc2626':'#e2e8f0'};color:${canNext?'#fff':'#94a3b8'};border-radius:10px;font-size:13px;font-weight:700;cursor:${canNext?'pointer':'default'};">
+                다음 →
+              </button>`
+            :`<button onclick="M.resetModal.step='select';renderModals()" style="flex:1;padding:11px;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:10px;font-size:13px;cursor:pointer;">← 뒤로</button>
+              <button id="resetExecBtn" onclick="confirmReset()"
+                style="flex:2;padding:11px;border:none;background:#dc2626;color:#fff;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;opacity:${(rm.confirmText||'').trim().normalize('NFC')===keyword?'1':'0.5'};">
+                🗑 영구 삭제
+              </button>`}
+        </div>
+      </div>
+    </div>`;
+}
+
+function goResetConfirm(){
+  const rm=M.resetModal;
+  if(rm.scope==='client'&&!rm.targetClient){showToast('거래처를 선택하세요.');return;}
+  M.resetModal={...rm,step:'confirm',confirmText:'',error:null};
+  renderModals();
+}
+
+async function confirmReset(){
+  // DOM에서 직접 최신값 읽기
+  const inputEl=document.getElementById('resetConfirmInput');
+  const input=(inputEl?.value||'').trim().normalize('NFC');
+  const rm=M.resetModal;
+  const tc=rm.targetClient?S.clients.find(c=>c.id===rm.targetClient):null;
+  const keyword=(tc?tc.name:'초기화').trim().normalize('NFC');
+
+  if(input!==keyword){
+    showToast(`"${keyword}"를 정확히 입력하세요.`);
+    if(inputEl){inputEl.style.borderColor='#dc2626';}
+    return;
+  }
+
+  // ── 실제 삭제 수행 ──────────────────────────────────────────────
+  try{
+    const scope=rm.scope;
+    if(scope==='all'){
+      S.transactions.forEach(t=>_deleteDoc('transactions',t.id));
+      S.clients.forEach(c=>_deleteDoc('clients',c.id));
+      S.transactions=[];
+      S.clients=[];
+      lsSet('crm_clients',[]);
+      lsSet('crm_tx',[]);
+      lsSet('crm_napum_synced',[]);
+
+    }else if(scope==='txonly'){
+      S.transactions.forEach(t=>_deleteDoc('transactions',t.id));
+      S.transactions=[];
+      lsSet('crm_tx',[]);
+      lsSet('crm_napum_synced',[]);
+
+    }else if(scope==='localonly'){
+      const toDelete=S.transactions.filter(t=>!t._napumId);
+      toDelete.forEach(t=>_deleteDoc('transactions',t.id));
+      S.transactions=S.transactions.filter(t=>t._napumId);
+
+    }else if(scope==='client'&&tc){
+      S.transactions.filter(t=>t.clientId===tc.id).forEach(t=>_deleteDoc('transactions',t.id));
+      _deleteDoc('clients',tc.id);
+      S.transactions=S.transactions.filter(t=>t.clientId!==tc.id);
+      S.clients=S.clients.filter(c=>c.id!==tc.id);
+      if(S.cExpanded===tc.id)S.cExpanded=null;
+    }
+
+    // 로컬 저장 먼저 (클라우드 실패해도 로컬은 반드시 반영)
+    lsSet('crm_clients',S.clients);
+    lsSet('crm_tx',S.transactions);
+
+    // 모달 닫고 화면 갱신 (클라우드 저장 전에 먼저 UI 업데이트)
+    closeResetModal();
+    render();
+    const labels={all:'전체 초기화',txonly:'거래 내역 삭제',localonly:'로컬 거래 삭제',client:`${tc?.name||''} 삭제`};
+    showToast('✅ '+labels[scope]+' 완료');
+
+    // 클라우드 저장 (실패해도 UI에는 영향 없음)
+    try{ await saveC(); }catch(e){ console.warn('saveC 실패:',e); }
+    try{ await saveTX(); }catch(e){ console.warn('saveTX 실패:',e); }
+
+  }catch(e){
+    console.error('초기화 오류:',e);
+    showToast('⚠️ 초기화 중 오류가 발생했습니다.');
+    closeResetModal();
+    render();
+  }
 }
 
 function exportData(){
@@ -2116,6 +2678,8 @@ function renderModals(){
   if(M.confirm)root.innerHTML=drawer+buildConfirm();
   else if(M.scanModal)root.innerHTML=drawer+buildScanModal();
   else if(M.syncModal)root.innerHTML=drawer+buildSyncModal();
+  else if(M.statModal)root.innerHTML=drawer+buildStatModal();
+  else if(M.resetModal)root.innerHTML=drawer+buildResetModal();
   else if(M.qpModal)root.innerHTML=drawer+buildQuickPayModal();
   else if(M.batchPayModal)root.innerHTML=drawer+buildBatchPayModal();
   else if(M.clientModal)root.innerHTML=drawer+buildClientModal();
@@ -2140,16 +2704,16 @@ function setTxPeriodMode(mode){
   if(mode==='all')     S.txMonth='전체';
   render();
 }
-// 날짜 헬퍼
-function _prevDay(d){const dt=new Date(d);dt.setDate(dt.getDate()-1);return dt.toISOString().slice(0,10);}
-function _nextDay(d){const dt=new Date(d);dt.setDate(dt.getDate()+1);return dt.toISOString().slice(0,10);}
-function _fmtDay(d){const[y,m,dd]=d.split('-');return`${+m}월 ${+dd}일`;}
-function _fmtDayFull(d){const[y,m,dd]=d.split('-');const days=['일','월','화','수','목','금','토'];const dow=new Date(d).getDay();return`${y}년 ${+m}월 ${+dd}일 (${days[dow]})`;}
-// 주(週) 헬퍼 - 월요일 기준
-function _weekOf(d){const dt=new Date(d);const dow=dt.getDay();const diff=dow===0?-6:1-dow;dt.setDate(dt.getDate()+diff);return dt.toISOString().slice(0,10);}
-function _weekEnd(monDate){const dt=new Date(monDate);dt.setDate(dt.getDate()+6);return dt.toISOString().slice(0,10);}
-function _prevWeek(monDate){const dt=new Date(monDate);dt.setDate(dt.getDate()-7);return dt.toISOString().slice(0,10);}
-function _nextWeek(monDate){const dt=new Date(monDate);dt.setDate(dt.getDate()+7);return dt.toISOString().slice(0,10);}
+// 날짜 헬퍼 - 반드시 로컬 파싱 (new Date('YYYY-MM-DD')는 UTC→KST 하루 어긋남)
+function _parseLocal(d){const[y,m,dd]=d.split('-').map(Number);return new Date(y,m-1,dd);}
+function _prevDay(d){const dt=_parseLocal(d);dt.setDate(dt.getDate()-1);return localDate(dt);}
+function _nextDay(d){const dt=_parseLocal(d);dt.setDate(dt.getDate()+1);return localDate(dt);}
+function _fmtDayFull(d){const[y,m,dd]=d.split('-').map(Number);const days=['일','월','화','수','목','금','토'];const dow=_parseLocal(d).getDay();return`${y}년 ${+m}월 ${+dd}일 (${days[dow]})`;}
+// 주(週) 헬퍼 - 월요일 기준, 로컬 파싱
+function _weekOf(d){const dt=_parseLocal(d);const dow=dt.getDay();const diff=dow===0?-6:1-dow;dt.setDate(dt.getDate()+diff);return localDate(dt);}
+function _weekEnd(monDate){const dt=_parseLocal(monDate);dt.setDate(dt.getDate()+6);return localDate(dt);}
+function _prevWeek(monDate){const dt=_parseLocal(monDate);dt.setDate(dt.getDate()-7);return localDate(dt);}
+function _nextWeek(monDate){const dt=_parseLocal(monDate);dt.setDate(dt.getDate()+7);return localDate(dt);}
 function _fmtWeek(monDate){const end=_weekEnd(monDate);const[ym,mm,dm]=monDate.split('-');const[ye,me,de]=end.split('-');return ym===ye&&mm===me?`${+ym}년 ${+mm}월 ${+dm}~${+de}일`:`${+ym}년 ${+mm}월 ${+dm}일 ~ ${+me}월 ${+de}일`;}
 function _inWeek(date,monDate){return date>=monDate&&date<=_weekEnd(monDate);}
 function prevMonth(ym){const[y,m]=ym.split('-').map(Number);return m===1?`${y-1}-12`:`${y}-${String(m-1).padStart(2,'0')}`;}
@@ -2317,6 +2881,15 @@ window.onerror=function(msg,src,line){
   return false;
 };
 (async()=>{ await loadData(); setTimeout(updateSyncBadge,1000); })();
+
+// 이벤트 위임: .stat-trigger 클릭 → 납품 명세표 팝업
+document.addEventListener('click', e=>{
+  const el=e.target.closest('.stat-trigger');
+  if(!el) return;
+  e.stopPropagation();
+  const cn=el.getAttribute('data-cn');
+  if(cn) openStatModal(cn);
+});
 </script>
 </body>
 </html>
