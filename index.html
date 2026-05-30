@@ -8,13 +8,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="거래·회계">
-<meta name="theme-color" content="#0f172a">
 <title>거래처·회계 관리 시스템</title>
-<link rel="manifest" href="/manifest.json">
-<link rel="apple-touch-icon" href="/icons/icon-152x152.png">
-<link rel="apple-touch-icon" sizes="192x192" href="/icons/icon-192x192.png">
-<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192x192.png">
 <!-- Firebase SDK는 JS에서 동적 로딩 (로드 실패해도 앱 동작) -->
 <style>
 /* ── Reset ─────────────────────────────────────────────────────────────── */
@@ -416,10 +410,13 @@ async function loadData(){
     console.warn('RTDB 로드 실패, 로컬 캐시 사용:',e.message);
   }
 
-  // 4) 실시간 리스너
+  // 4) 실시간 리스너 (CRM)
   _attachListeners();
 
-  // 5) 마이그레이션된 데이터 Firebase에도 반영 (fire-and-forget)
+  // 5) 납품앱 실시간 리스너 시작
+  attachNapumListeners().catch(e=>console.warn('납품 리스너 시작 실패:',e));
+
+  // 6) 마이그레이션된 데이터 Firebase에도 반영 (fire-and-forget)
   if(_migrated && db){
     try{ await db.ref('transactions').set(toMap(S.transactions)); }
     catch(e){ console.warn('마이그레이션 클라우드 반영 실패:',e); }
@@ -443,6 +440,156 @@ function _attachListeners(){
     if(JSON.stringify(arr)===JSON.stringify(S.transactions))return;
     S.transactions=arr;lsSet('crm_tx',S.transactions);render();
   },e=>console.warn('transactions 리스너:',e));
+}
+
+// ── 납품앱 실시간 리스너 ────────────────────────────────────────────
+// wsId → { clientsRef, ordersRef } 형태로 리스너 핸들 보관
+const _napumListeners = {};
+
+async function attachNapumListeners(){
+  const workspaces = _getWorkspaces();
+  if(!workspaces.length) return;
+
+  // Firebase SDK 및 납품앱 instance 확보
+  if(typeof firebase === 'undefined') return;
+  let napumApp;
+  try{ napumApp = firebase.app('napum'); }
+  catch(e){ napumApp = firebase.initializeApp(NAPUM_FB_CFG, 'napum'); }
+  const napumDb = napumApp.database();
+
+  // 더 이상 없는 워크스페이스 리스너 제거
+  const wsIds = new Set(workspaces.map(w => w.id));
+  for(const wsId of Object.keys(_napumListeners)){
+    if(!wsIds.has(wsId)){
+      const h = _napumListeners[wsId];
+      if(h.clientsRef) h.clientsRef.off('value', h.clientsCb);
+      if(h.ordersRef)  h.ordersRef.off('value',  h.ordersCb);
+      delete _napumListeners[wsId];
+    }
+  }
+
+  // 새 워크스페이스 리스너 등록
+  for(const ws of workspaces){
+    if(_napumListeners[ws.id]) continue; // 이미 등록됨
+
+    const wsRef = napumDb.ref('workspaces/' + ws.id);
+    // 클라이언트 캐시 (주문 처리에 필요)
+    let _napumClientsCache = {};
+
+    const clientsCb = snap => {
+      _napumClientsCache = snap.val() || {};
+    };
+    const clientsRef = wsRef.child('clients');
+    clientsRef.on('value', clientsCb, e => console.warn('납품 clients 리스너:', e));
+
+    const ordersCb = snap => {
+      const orders = snap.val() || {};
+      _processNapumOrdersSnapshot(ws, orders, _napumClientsCache);
+    };
+    const ordersRef = wsRef.child('orders');
+    ordersRef.on('value', ordersCb, e => console.warn('납품 orders 리스너:', e));
+
+    _napumListeners[ws.id] = { clientsRef, clientsCb, ordersRef, ordersCb };
+    console.info('[납품 실시간] 리스너 등록:', ws.label, ws.id);
+  }
+}
+
+function detachNapumListeners(){
+  for(const wsId of Object.keys(_napumListeners)){
+    const h = _napumListeners[wsId];
+    if(h.clientsRef) h.clientsRef.off('value', h.clientsCb);
+    if(h.ordersRef)  h.ordersRef.off('value',  h.ordersCb);
+    delete _napumListeners[wsId];
+  }
+}
+
+// 납품앱 orders 스냅샷을 받아 CRM에 반영
+function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj){
+  const orders = Object.values(ordersObj);
+  const napumClients = Object.values(napumClientsObj);
+
+  const nameToId = {};
+  S.clients.forEach(c => { nameToId[c.name] = c.id; });
+
+  const napumIdToCrmId = {};
+  S.transactions.forEach(t => { if(t._napumId) napumIdToCrmId[t._napumId] = t.id; });
+
+  const synced = new Set(lsGet('crm_napum_synced', []));
+
+  let changed = false;
+
+  // 거래처 자동 추가
+  napumClients.forEach(nc => {
+    if(!nc.name || nc.isHidden) return;
+    if(!nameToId[nc.name]){
+      const newC = {
+        id: nextId(S.clients),
+        name: nc.name, bizNo:'', rep:'', phone:'', email:'', address:'',
+        type:'매출처',
+        memo:`[${ws.label}]${nc.note?' '+nc.note:''}`
+      };
+      S.clients = [...S.clients, newC];
+      nameToId[nc.name] = newC.id;
+      changed = true;
+    }
+  });
+
+  // 주문 처리
+  orders.forEach(o => {
+    if(o.isVoid || !o.date || !o.total) return;
+
+    const napumClient = napumClients.find(c => String(c.id) === String(o.clientId));
+    const crmName = o.clientName || (napumClient?.name || '');
+    const crmClientId = nameToId[crmName];
+    if(!crmClientId) return;
+
+    const memoItems = (o.items||[]).map(i=>`${i.name}${i.qty>1?` ×${i.qty}`:''}`).join(', ');
+    const memo = `[${ws.label}] ${o.note||(memoItems||'납품')}`;
+    const amount = Number(o.total) || 0;
+    const tax = 0;
+    const status = o.isPaid ? '수금완료' : '미수금';
+    const napumKey = `${ws.id}:${o.id}`;
+
+    if(napumIdToCrmId[napumKey]){
+      // 기존 전표 업데이트
+      S.transactions = S.transactions.map(t => {
+        if(t.id !== napumIdToCrmId[napumKey]) return t;
+        const prev = JSON.stringify(t);
+        const next = {...t, status, amount, tax, memo};
+        if(o.paidAmount) next.paidAmount = o.paidAmount; else delete next.paidAmount;
+        if(o.paidAt)     next.paidAt = o.paidAt;
+        if(o.paidMethod) next.paidMethod = o.paidMethod;
+        if(o.paidMethodDetail) next.paidMethodDetail = o.paidMethodDetail;
+        else delete next.paidMethodDetail;
+        if(JSON.stringify(next) !== prev) changed = true;
+        return next;
+      });
+    } else if(!synced.has(napumKey)){
+      // 신규 전표 추가
+      const newT = {
+        id: nextId(S.transactions),
+        date: o.date, clientId: crmClientId,
+        type:'매출', amount, tax, memo, status,
+        _napumId: napumKey
+      };
+      if(o.paidAmount) newT.paidAmount = o.paidAmount;
+      if(o.paidAt)     newT.paidAt = o.paidAt;
+      if(o.paidMethod) newT.paidMethod = o.paidMethod;
+      if(o.paidMethodDetail) newT.paidMethodDetail = o.paidMethodDetail;
+      S.transactions = [...S.transactions, newT];
+      synced.add(napumKey);
+      changed = true;
+    }
+  });
+
+  if(changed){
+    lsSet('crm_clients', S.clients);
+    lsSet('crm_tx', S.transactions);
+    lsSet('crm_napum_synced', [...synced]);
+    saveC(); saveTX();
+    render();
+    showToast('📦 납품 관리에서 업데이트됨');
+  }
 }
 
 async function _uploadAll(){
@@ -1529,10 +1676,14 @@ function syncAddWorkspace(){
   _saveWorkspaces(ws);
   M.syncModal={...sm,newInput:'',newLabel:''};
   renderModals();
+  // 새 워크스페이스 실시간 리스너 즉시 등록
+  attachNapumListeners().catch(e=>console.warn('납품 리스너 갱신 실패:',e));
 }
 function syncRemoveWorkspace(id){
   const ws=_getWorkspaces().filter(w=>w.id!==id);
   _saveWorkspaces(ws);
+  // 제거된 워크스페이스 리스너 해제
+  attachNapumListeners().catch(e=>console.warn('납품 리스너 갱신 실패:',e));
   renderModals();
 }
 
@@ -2998,16 +3149,6 @@ document.addEventListener('click', e=>{
   const cn=el.getAttribute('data-cn');
   if(cn) openStatModal(cn);
 });
-</script>
-
-<script>
-if('serviceWorker' in navigator){
-  window.addEventListener('load', ()=>{
-    navigator.serviceWorker.register('/sw.js')
-      .then(r=>console.info('SW 등록:', r.scope))
-      .catch(e=>console.warn('SW 실패:', e));
-  });
-}
 </script>
 </body>
 </html>
