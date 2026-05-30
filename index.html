@@ -784,65 +784,50 @@ function buildDashboard(){
   const pur=monT.filter(t=>t.type==='매입').reduce((s,t)=>s+t.amount,0);
   const pl=rev-pur;
   const plColor=pl>=0?'#16a34a':'#dc2626';
+  const plBg=pl>=0?'#f0fdf4':'#fff1f2';
+  const plBd=pl>=0?'#bbf7d0':'#fecdd3';
+
+  // 미수금/미지급금
   const rcv=S.transactions.filter(t=>t.status==='미수금').reduce((s,t)=>s+_txRemain(t),0);
   const pay=S.transactions.filter(t=>t.status==='미지급금').reduce((s,t)=>s+_txRemain(t),0);
-  const recent=[...S.transactions].filter(t=>t.date.startsWith(mon)).sort((a,b)=>b.date.localeCompare(a.date)).slice(0,6);
+
+  // 수금률 (이달 매출 기준)
+  const monRev=monT.filter(t=>t.type==='매출');
+  const totalBill=monRev.reduce((s,t)=>s+t.amount+t.tax,0);
+  const totalPaid=monRev.reduce((s,t)=>s+(t.paidAmount||0),0);
+  const collectRate=totalBill>0?Math.round((totalPaid/totalBill)*100):null;
+
+  // 6개월 추이 데이터
+  const months6=[];
+  for(let i=5;i>=0;i--){
+    const d=new Date();d.setDate(1);d.setMonth(d.getMonth()-i);
+    const ym=d.toISOString().slice(0,7);
+    const mT=S.transactions.filter(t=>t.date.startsWith(ym));
+    months6.push({
+      ym, label:d.toLocaleDateString('ko-KR',{month:'short'}),
+      rev:mT.filter(t=>t.type==='매출').reduce((s,t)=>s+t.amount,0),
+      pur:mT.filter(t=>t.type==='매입').reduce((s,t)=>s+t.amount,0),
+    });
+  }
+  const maxBar=Math.max(...months6.map(m=>Math.max(m.rev,m.pur)),1);
+
+  // 이달 매출 상위 거래처 TOP5
   const clientRev={};
-  S.transactions.filter(t=>t.type==='매출'&&t.date.startsWith(mon)).forEach(t=>{clientRev[t.clientId]=(clientRev[t.clientId]||0)+t.amount;});
+  monT.filter(t=>t.type==='매출').forEach(t=>{clientRev[t.clientId]=(clientRev[t.clientId]||0)+t.amount;});
   const top=Object.entries(clientRev).sort((a,b)=>b[1]-a[1]).slice(0,5).map(([id,v])=>({c:S.clients.find(x=>x.id===+id),v}));
   const maxV=top[0]?.v||1;
 
-  const statCards=[
-    {label:'매출',val:fmtW(rev),sub:`${monT.filter(t=>t.type==='매출').length}건`,color:'#16a34a',bg:'#f0fdf4',bd:'#bbf7d0'},
-    {label:'매입',val:fmtW(pur),sub:`${monT.filter(t=>t.type==='매입').length}건`,color:'#dc2626',bg:'#fff1f2',bd:'#fecdd3'},
-    {label:'손익',val:fmtW(pl),sub:pl>=0?'흑자':'적자',color:plColor,bg:'#f8fafc',bd:'#e2e8f0'},
-    {label:'미수금 (전체)',val:fmtW(rcv),sub:'수금 대기',color:'#b45309',bg:'#fefce8',bd:'#fef08a'},
-    {label:'미지급금 (전체)',val:fmtW(pay),sub:'지급 대기',color:'#1d4ed8',bg:'#eff6ff',bd:'#bfdbfe'},
-  ].map(({label,val,sub,color,bg,bd})=>`
-    <div style="background:${bg};border:1px solid ${bd};border-radius:12px;padding:16px;">
-      <div style="color:#64748b;font-size:11px;margin-bottom:6px;">${esc(label)}</div>
-      <div class="stat-val" style="color:${color};font-size:20px;font-weight:700;margin-bottom:3px;">${esc(val)}</div>
-      <div style="color:#94a3b8;font-size:11px;">${esc(sub)}</div>
-    </div>`).join('');
+  // 미수금 오래된 순 TOP5
+  const oldUnpaid=[...S.transactions]
+    .filter(t=>t.status==='미수금')
+    .sort((a,b)=>a.date.localeCompare(b.date))
+    .slice(0,5);
 
-  const recentRows=recent.map(tx=>{
-    const cl=S.clients.find(c=>c.id===tx.clientId);
-    const color=tx.type==='매출'?'#16a34a':'#dc2626';
-    return `
-      <div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #f1f5f9;">
-        <div style="width:3px;height:34px;border-radius:2px;background:${color};flex-shrink:0;"></div>
-        <div style="flex:1;min-width:0;">
-          <div style="display:flex;align-items:center;gap:5px;">
-            <span style="color:#0f172a;font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(cl?.name||'?')}</span>
-            <span style="color:${color};font-size:11px;flex-shrink:0;">${esc(tx.type)}</span>
-          </div>
-          <div style="color:#94a3b8;font-size:11px;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(tx.memo||'-')} · ${esc(tx.date)}</div>
-        </div>
-        <div style="text-align:right;flex-shrink:0;">
-          <div style="color:${color};font-size:12px;font-weight:600;">${tx.type==='매출'?'+':'-'}${fmtW(tx.amount)}</div>
-          <div style="margin-top:3px;">${statusBadge(tx.status)}</div>
-        </div>
-      </div>`;
-  }).join('');
-
-  const topRows=top.map(({c,v})=>`
-    <div style="margin-bottom:10px;">
-      <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-        <span style="color:#334155;font-size:12px;">${esc(c?.name||'?')}</span>
-        <span style="color:#16a34a;font-size:12px;font-weight:600;">${fmtW(v)}</span>
-      </div>
-      <div style="height:4px;background:#f1f5f9;border-radius:2px;"><div style="height:100%;background:#16a34a;border-radius:2px;width:${(v/maxV)*100}%;opacity:.65;"></div></div>
-    </div>`).join('');
-
-  const sumCards=[
-    {label:'전체',val:S.clients.length,color:'#334155',bg:'#f8fafc'},
-    {label:'매출처',val:S.clients.filter(c=>c.type==='매출처').length,color:'#16a34a',bg:'#f0fdf4'},
-    {label:'매입처',val:S.clients.filter(c=>c.type==='매입처').length,color:'#1d4ed8',bg:'#eff6ff'},
-  ].map(({label,val,color,bg})=>`
-    <div style="background:${bg};border-radius:8px;padding:10px 0;text-align:center;">
-      <div style="color:${color};font-size:18px;font-weight:700;">${val}</div>
-      <div style="color:#94a3b8;font-size:11px;margin-top:1px;">${esc(label)}</div>
-    </div>`).join('');
+  // 거래처 현황
+  const cAll=S.clients.length;
+  const cSell=S.clients.filter(c=>c.type==='매출처').length;
+  const cBuy=S.clients.filter(c=>c.type==='매입처').length;
+  const cBoth=S.clients.filter(c=>c.type==='매출/매입').length;
 
   const dateStr=new Date().toLocaleDateString('ko-KR',{year:'numeric',month:'long',day:'numeric',weekday:'long'});
   const monthNav=`<div style="display:flex;align-items:center;gap:6px;">
@@ -853,8 +838,128 @@ function buildDashboard(){
     <button onclick="setTxMonth('${nextMonth(mon)}')" ${canNext?'':'disabled'} style="width:28px;height:28px;border-radius:7px;border:1px solid #e2e8f0;background:${canNext?'#f8fafc':'#f1f5f9'};cursor:${canNext?'pointer':'default'};font-size:15px;color:${canNext?'#64748b':'#cbd5e1'};">›</button>
     ${mon!==cur?`<button onclick="setTxMonth('${cur}')" style="padding:4px 9px;border-radius:7px;border:1px solid #d97706;background:#fef3c7;color:#d97706;font-size:11px;font-weight:600;cursor:pointer;">이번달</button>`:''}
   </div>`;
+
+  // ── 상단 3카드 (매출/매입/손익)
+  const topCards=`
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
+      <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:14px;padding:14px 12px;">
+        <div style="color:#16a34a;font-size:10px;font-weight:600;letter-spacing:.5px;margin-bottom:6px;">매출</div>
+        <div style="color:#16a34a;font-size:17px;font-weight:800;line-height:1.1;">${fmtW(rev)}</div>
+        <div style="color:#86efac;font-size:11px;margin-top:4px;">${monT.filter(t=>t.type==='매출').length}건</div>
+      </div>
+      <div style="background:#fff1f2;border:1px solid #fecdd3;border-radius:14px;padding:14px 12px;">
+        <div style="color:#dc2626;font-size:10px;font-weight:600;letter-spacing:.5px;margin-bottom:6px;">매입</div>
+        <div style="color:#dc2626;font-size:17px;font-weight:800;line-height:1.1;">${fmtW(pur)}</div>
+        <div style="color:#fca5a5;font-size:11px;margin-top:4px;">${monT.filter(t=>t.type==='매입').length}건</div>
+      </div>
+      <div style="background:${plBg};border:1px solid ${plBd};border-radius:14px;padding:14px 12px;">
+        <div style="color:${plColor};font-size:10px;font-weight:600;letter-spacing:.5px;margin-bottom:6px;">손익</div>
+        <div style="color:${plColor};font-size:17px;font-weight:800;line-height:1.1;">${fmtW(pl)}</div>
+        <div style="color:${pl>=0?'#86efac':'#fca5a5'};font-size:11px;margin-top:4px;">${pl>=0?'▲ 흑자':'▼ 적자'}</div>
+      </div>
+    </div>`;
+
+  // ── 미수금/미지급금/수금률 카드
+  const midCards=`
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
+      <div onclick="setView('receivables')" style="background:#fefce8;border:1px solid #fef08a;border-radius:14px;padding:14px 12px;cursor:pointer;">
+        <div style="color:#b45309;font-size:10px;font-weight:600;letter-spacing:.5px;margin-bottom:6px;">미수금</div>
+        <div style="color:#b45309;font-size:17px;font-weight:800;line-height:1.1;">${fmtW(rcv)}</div>
+        <div style="color:#fcd34d;font-size:11px;margin-top:4px;">전체 누적</div>
+      </div>
+      <div onclick="setView('receivables')" style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:14px;padding:14px 12px;cursor:pointer;">
+        <div style="color:#1d4ed8;font-size:10px;font-weight:600;letter-spacing:.5px;margin-bottom:6px;">미지급금</div>
+        <div style="color:#1d4ed8;font-size:17px;font-weight:800;line-height:1.1;">${fmtW(pay)}</div>
+        <div style="color:#93c5fd;font-size:11px;margin-top:4px;">전체 누적</div>
+      </div>
+      <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:14px;padding:14px 12px;">
+        <div style="color:#475569;font-size:10px;font-weight:600;letter-spacing:.5px;margin-bottom:6px;">수금률</div>
+        <div style="color:#0f172a;font-size:17px;font-weight:800;line-height:1.1;">${collectRate!==null?collectRate+'%':'—'}</div>
+        <div style="color:#94a3b8;font-size:11px;margin-top:4px;">이달 기준</div>
+      </div>
+    </div>`;
+
+  // ── 6개월 추이 막대 그래프
+  const barH=56;
+  const barCols=months6.map(m=>{
+    const rH=Math.round((m.rev/maxBar)*barH);
+    const pH=Math.round((m.pur/maxBar)*barH);
+    const isCurrentMon=m.ym===mon;
+    return `
+      <div style="display:flex;flex-direction:column;align-items:center;gap:3px;flex:1;">
+        <div style="display:flex;align-items:flex-end;gap:2px;height:${barH}px;">
+          <div style="width:10px;height:${rH||2}px;background:${isCurrentMon?'#16a34a':'#86efac'};border-radius:3px 3px 0 0;transition:height .3s;"></div>
+          <div style="width:10px;height:${pH||2}px;background:${isCurrentMon?'#dc2626':'#fca5a5'};border-radius:3px 3px 0 0;transition:height .3s;"></div>
+        </div>
+        <div style="color:${isCurrentMon?'#d97706':'#94a3b8'};font-size:10px;font-weight:${isCurrentMon?700:400};">${esc(m.label)}</div>
+      </div>`;
+  }).join('');
+
+  const chartSection=`
+    <div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+        <span style="color:#0f172a;font-weight:700;font-size:13px;">📊 6개월 매출·매입 추이</span>
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="display:flex;align-items:center;gap:3px;font-size:10px;color:#64748b;"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:#16a34a;"></span>매출</span>
+          <span style="display:flex;align-items:center;gap:3px;font-size:10px;color:#64748b;"><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:#dc2626;"></span>매입</span>
+        </div>
+      </div>
+      <div style="display:flex;align-items:flex-end;gap:4px;padding:0 4px;">${barCols}</div>
+    </div>`;
+
+  // ── TOP5 매출 거래처
+  const topRows=top.length?top.map(({c,v},i)=>`
+    <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid #f8fafc;">
+      <div style="width:20px;height:20px;border-radius:50%;background:${i===0?'#fbbf24':i===1?'#94a3b8':i===2?'#b45309':'#e2e8f0'};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:${i<3?'#fff':'#94a3b8'};flex-shrink:0;">${i+1}</div>
+      <div style="flex:1;min-width:0;">
+        <div style="color:#0f172a;font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c?.name||'?')}</div>
+        <div style="height:4px;background:#f1f5f9;border-radius:2px;margin-top:4px;"><div style="height:100%;background:#16a34a;border-radius:2px;width:${Math.round((v/maxV)*100)}%;opacity:.7;"></div></div>
+      </div>
+      <div style="color:#16a34a;font-size:12px;font-weight:700;flex-shrink:0;">${fmtW(v)}</div>
+    </div>`).join('')
+    :'<div style="color:#94a3b8;font-size:12px;text-align:center;padding:16px 0;">이달 매출 없음</div>';
+
+  // ── 미수금 오래된 순 TOP5
+  const unpaidRows=oldUnpaid.length?oldUnpaid.map(tx=>{
+    const cl=S.clients.find(c=>c.id===tx.clientId);
+    const remain=_txRemain(tx);
+    const daysAgo=Math.floor((Date.now()-new Date(tx.date))/(86400000));
+    const urgColor=daysAgo>=60?'#dc2626':daysAgo>=30?'#b45309':'#64748b';
+    return `
+      <div style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid #f8fafc;">
+        <div style="flex:1;min-width:0;">
+          <div style="display:flex;align-items:center;gap:5px;">
+            <span style="color:#0f172a;font-size:12px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(cl?.name||'?')}</span>
+            <span style="color:${urgColor};font-size:10px;font-weight:600;flex-shrink:0;">${daysAgo}일 경과</span>
+          </div>
+          <div style="color:#94a3b8;font-size:10px;margin-top:1px;">${esc(tx.date)} · ${esc(tx.memo||'-').slice(0,20)}</div>
+        </div>
+        <div style="text-align:right;flex-shrink:0;">
+          <div style="color:#b45309;font-size:12px;font-weight:700;">${fmtW(remain)}</div>
+        </div>
+      </div>`;
+  }).join('')
+    :'<div style="color:#94a3b8;font-size:12px;text-align:center;padding:16px 0;">미수금 없음 🎉</div>';
+
+  // ── 거래처 현황
+  const clientSection=`
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;">
+      ${[
+        {label:'전체',val:cAll,color:'#334155',bg:'#f8fafc',bd:'#e2e8f0'},
+        {label:'매출처',val:cSell,color:'#16a34a',bg:'#f0fdf4',bd:'#bbf7d0'},
+        {label:'매입처',val:cBuy,color:'#1d4ed8',bg:'#eff6ff',bd:'#bfdbfe'},
+        {label:'매출/매입',val:cBoth,color:'#b45309',bg:'#fefce8',bd:'#fef08a'},
+      ].map(({label,val,color,bg,bd})=>`
+        <div style="background:${bg};border:1px solid ${bd};border-radius:10px;padding:10px 6px;text-align:center;">
+          <div style="color:${color};font-size:18px;font-weight:800;">${val}</div>
+          <div style="color:#94a3b8;font-size:10px;margin-top:2px;">${esc(label)}</div>
+        </div>`).join('')}
+    </div>`;
+
   return `
-    <div style="display:flex;flex-direction:column;gap:18px;">
+    <div style="display:flex;flex-direction:column;gap:14px;">
+
+      <!-- 헤더 -->
       <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:8px;">
         <div>
           <h1 class="page-title" style="color:#0f172a;font-size:20px;font-weight:700;">대시보드</h1>
@@ -862,26 +967,40 @@ function buildDashboard(){
         </div>
         ${monthNav}
       </div>
-      <div class="g4">${statCards}</div>
-      <div class="dash-layout">
-        <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:16px;">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">
-            <span style="color:#0f172a;font-weight:600;font-size:14px;">최근 거래 (${fmtMonth(mon)})</span>
-            <button onclick="setView('transactions')" style="color:#d97706;font-size:12px;background:none;border:none;cursor:pointer;">전체보기 →</button>
-          </div>
-          ${recentRows||'<div style="padding:20px 0;text-align:center;color:#94a3b8;font-size:13px;">거래 없음</div>'}
+
+      <!-- 매출/매입/손익 -->
+      ${topCards}
+
+      <!-- 미수금/미지급금/수금률 -->
+      ${midCards}
+
+      <!-- 6개월 추이 그래프 -->
+      ${chartSection}
+
+      <!-- 매출 상위 거래처 TOP5 -->
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <span style="color:#0f172a;font-weight:700;font-size:13px;">🏆 이달 매출 상위 거래처</span>
+          <button onclick="setView('clients')" style="color:#d97706;font-size:11px;background:none;border:none;cursor:pointer;">전체보기 →</button>
         </div>
-        <div class="dash-right">
-          <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:16px;">
-            <div style="color:#0f172a;font-weight:600;font-size:14px;margin-bottom:12px;">매출 상위 거래처</div>
-            ${topRows||'<div style="color:#94a3b8;font-size:13px;text-align:center;padding:16px 0;">데이터 없음</div>'}
-          </div>
-          <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;padding:16px;">
-            <div style="color:#0f172a;font-weight:600;font-size:14px;margin-bottom:12px;">거래처 현황</div>
-            <div class="dash-right-inner">${sumCards}</div>
-          </div>
-        </div>
+        ${topRows}
       </div>
+
+      <!-- 미수금 오래된 순 TOP5 -->
+      <div style="background:#fff;border:1px solid #fef08a;border-radius:14px;padding:16px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
+          <span style="color:#b45309;font-weight:700;font-size:13px;">⚠️ 미수금 오래된 순</span>
+          <button onclick="setView('receivables')" style="color:#d97706;font-size:11px;background:none;border:none;cursor:pointer;">전체보기 →</button>
+        </div>
+        ${unpaidRows}
+      </div>
+
+      <!-- 거래처 현황 -->
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:14px;padding:16px;">
+        <div style="color:#0f172a;font-weight:700;font-size:13px;margin-bottom:10px;">🏢 거래처 현황</div>
+        ${clientSection}
+      </div>
+
     </div>`;
 }
 
