@@ -656,13 +656,20 @@ function toggleStatus(txId){
   S.transactions=S.transactions.map(t=>{
     if(t.id!==txId) return t;
     const newStatus=next[t.status]||t.status;
-    // 수금완료/지급완료로 바뀌는 경우 paidAmount를 전액으로 세팅
     const isFull=newStatus==='수금완료'||newStatus==='지급완료';
+    const isPending=newStatus==='미수금'||newStatus==='미지급금';
     const u={...t,status:newStatus};
     if(isFull&&!u.paidAmount){
+      // 미수금→수금완료: paidAmount가 없으면 전액 세팅
       u.paidAmount=t.amount+t.tax;
       u.paidAt=new Date().toISOString();
       u.paidMethod=u.paidMethod||'cash';
+    } else if(isPending){
+      // 수금완료→미수금 롤백: 수금 기록 초기화
+      delete u.paidAmount;
+      delete u.paidAt;
+      delete u.paidMethod;
+      delete u.paidMethodDetail;
     }
     updatedTx=u;
     return u;
@@ -2335,6 +2342,16 @@ function buildQuickPayModal(){
   const label=isSales?'수금':'지급';
   const previewAmt=mo.method==='mixed'?(mo.mixCash||0)+(mo.mixTransfer||0):(mo.amount||0);
 
+  // 이월액: 동일 거래처의 현재 거래 외 다른 미수금/미지급금 잔액 합계
+  const carryOver=S.transactions
+    .filter(x=>x.clientId===t.clientId && x.id!==t.id && _txIsPending(x))
+    .reduce((s,x)=>s+_txRemain(x),0);
+
+  const carryBtn=carryOver>0
+    ?`<button onclick="M.qpModal.amount=${carryOver};document.getElementById('qp_amt').value=${carryOver};_updatePayPreview('');renderModals()"
+      style="padding:5px 9px;border-radius:7px;border:1px solid #fcd34d;background:#fefce8;color:#b45309;font-size:11px;font-weight:600;cursor:pointer;">⏩ 이월액 ${esc(fmtW(carryOver))}</button>`
+    :'';
+
   const quickBtns=[
     {label:'전액',val:remain},
     ...(remain>=200000?[{label:'절반',val:Math.round(remain/2/1000)*1000}]:[]),
@@ -2374,7 +2391,7 @@ function buildQuickPayModal(){
             <input id="qp_amt" type="number" value="${mo.amount||''}" placeholder="${remain}"
               style="${ISX}font-size:16px;font-weight:600;" ${FB}
               oninput="M.qpModal.amount=Number(this.value)||0;_updatePayPreview('')">
-            <div style="display:flex;gap:5px;margin-top:6px;flex-wrap:wrap;">${quickBtns}</div>
+            <div style="display:flex;gap:5px;margin-top:6px;flex-wrap:wrap;">${carryBtn}${quickBtns}</div>
           </div>
 
           <div style="margin-bottom:12px;">
