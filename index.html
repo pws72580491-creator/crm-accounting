@@ -435,8 +435,11 @@ async function loadData(){
     catch(e){ console.warn('마이그레이션 클라우드 반영 실패:',e); }
   }
 
-  // 7) 자동 백업 체크 (15일·말일)
-  setTimeout(checkAutoBackup, 1500);
+  // 7) 자동 백업 체크 (15일·말일) + Firebase 백업 목록 동기화
+  setTimeout(async ()=>{
+    await _syncBackupsFromFb();
+    checkAutoBackup();
+  }, 1500);
 }
 
 let _offC=null,_offTX=null;
@@ -3225,14 +3228,56 @@ async function confirmReset(){
 }
 
 // ── AUTO BACKUP SYSTEM ────────────────────────────────────────────────────────
-const BACKUP_LS_KEY = 'crm_auto_backups'; // [{date, label, data}] 최대 10개
-const BACKUP_MAX    = 10;
+const BACKUP_LS_KEY  = 'crm_auto_backups'; // localStorage 캐시
+const BACKUP_FB_PATH = 'backups';           // Firebase RTDB 경로: /backups/{id}
+const BACKUP_MAX     = 10;
 
+// ── localStorage 캐시 ──────────────────────────────────────────────────────
 function _getBackups(){ return lsGet(BACKUP_LS_KEY, []); }
-function _saveBackups(arr){ lsSet(BACKUP_LS_KEY, arr); }
+function _saveBackupsLocal(arr){ lsSet(BACKUP_LS_KEY, arr); }
 
-/** 백업 생성 (내부) */
-function _createBackup(label){
+// ── Firebase 백업 저장 ────────────────────────────────────────────────────
+async function _fbSaveBackup(entry){
+  if(!db) return;
+  try{
+    await db.ref(`${BACKUP_FB_PATH}/${entry.id}`).set(entry);
+  }catch(e){ console.warn('[백업] Firebase 저장 실패:', e.message); }
+}
+
+// ── Firebase 백업 삭제 ────────────────────────────────────────────────────
+async function _fbDeleteBackup(id){
+  if(!db) return;
+  try{
+    await db.ref(`${BACKUP_FB_PATH}/${id}`).remove();
+  }catch(e){ console.warn('[백업] Firebase 삭제 실패:', e.message); }
+}
+
+// ── Firebase → localStorage 동기화 (앱 시작 시 1회) ──────────────────────
+async function _syncBackupsFromFb(){
+  if(!db) return;
+  try{
+    const snap = await db.ref(BACKUP_FB_PATH).get();
+    if(!snap.val()) return;
+    const arr = Object.values(snap.val()).sort((a,b)=>b.id-a.id).slice(0, BACKUP_MAX);
+    _saveBackupsLocal(arr);
+    console.info(`[백업] Firebase에서 ${arr.length}개 동기화됨`);
+  }catch(e){ console.warn('[백업] Firebase 동기화 실패:', e.message); }
+}
+
+// ── Firebase에서 오래된 백업 정리 (BACKUP_MAX 초과분 삭제) ────────────────
+async function _fbPruneBackups(){
+  if(!db) return;
+  try{
+    const snap = await db.ref(BACKUP_FB_PATH).get();
+    if(!snap.val()) return;
+    const all = Object.values(snap.val()).sort((a,b)=>b.id-a.id);
+    const toDelete = all.slice(BACKUP_MAX);
+    await Promise.all(toDelete.map(b => db.ref(`${BACKUP_FB_PATH}/${b.id}`).remove()));
+  }catch(e){ console.warn('[백업] Firebase 정리 실패:', e.message); }
+}
+
+/** 백업 생성 (localStorage + Firebase 동시 저장) */
+async function _createBackup(label){
   const backups = _getBackups();
   const entry = {
     id:   Date.now(),
@@ -3241,35 +3286,43 @@ function _createBackup(label){
     clients:      JSON.parse(JSON.stringify(S.clients)),
     transactions: JSON.parse(JSON.stringify(S.transactions)),
   };
-  // 같은 label 중복 제거 후 최신 추가
+  // localStorage: 같은 label 중복 제거 후 최신 추가
   const filtered = backups.filter(b => b.label !== label);
   filtered.unshift(entry);
-  _saveBackups(filtered.slice(0, BACKUP_MAX));
+  _saveBackupsLocal(filtered.slice(0, BACKUP_MAX));
+
+  // Firebase: 비동기 저장 + 정리 (fire-and-forget)
+  _fbSaveBackup(entry).then(()=>_fbPruneBackups()).catch(()=>{});
+
   return entry;
 }
 
 /** 매월 15일·말일 자동 백업 체크 — loadData 완료 후 호출 */
-function checkAutoBackup(){
+async function checkAutoBackup(){
   const d    = new Date();
   const day  = d.getDate();
   const lastDay = new Date(d.getFullYear(), d.getMonth()+1, 0).getDate();
   const isBackupDay = (day === 15 || day === lastDay);
   if(!isBackupDay) return;
 
-  const label = `AUTO_${localDate()}`; // e.g. AUTO_2025-06-15
+  const label = `AUTO_${localDate()}`;
   const existing = _getBackups().find(b => b.label === label);
   if(existing) return; // 오늘 이미 백업됨
 
-  const entry = _createBackup(label);
+  const entry = await _createBackup(label);
   console.info(`[자동백업] ${label} 완료 (거래처 ${entry.clients.length}개, 거래 ${entry.transactions.length}건)`);
   showToast(`🗄️ 자동 백업 완료 (${localDate()})`);
 }
 
-/** 백업 모달 열기 */
-function openBackupModal(){
-  M.backupModal = { tab: 'list' };
+/** 백업 모달 열기 — Firebase 최신 목록 로드 후 표시 */
+async function openBackupModal(){
+  M.backupModal = { tab: 'list', loading: true };
   renderModals();
   _pushModalHistory();
+  // Firebase 최신 목록 동기화
+  await _syncBackupsFromFb();
+  M.backupModal = { tab: 'list', loading: false };
+  renderModals();
 }
 function closeBackupModal(){
   M.backupModal = null;
@@ -3277,52 +3330,60 @@ function closeBackupModal(){
 }
 
 /** 백업 목록에서 복구 */
-function restoreBackup(id){
+async function restoreBackup(id){
   const backups = _getBackups();
-  const entry   = backups.find(b => b.id === id);
+  let entry = backups.find(b => b.id === id);
+
+  // localStorage에 없으면 Firebase에서 직접 로드
+  if(!entry && db){
+    try{
+      const snap = await db.ref(`${BACKUP_FB_PATH}/${id}`).get();
+      entry = snap.val();
+    }catch(e){}
+  }
   if(!entry){ showToast('백업을 찾을 수 없습니다.'); return; }
 
   const dateStr = new Date(entry.date).toLocaleString('ko-KR');
   if(!confirm(`[${entry.label}]\n${dateStr}\n거래처 ${entry.clients.length}개 / 거래 ${entry.transactions.length}건\n\n이 백업으로 복구할까요?\n현재 데이터는 덮어씌워집니다.`)) return;
 
   // 복구 전 현재 데이터를 임시 백업
-  _createBackup(`BEFORE_RESTORE_${localDate()}`);
+  await _createBackup(`BEFORE_RESTORE_${localDate()}`);
 
   S.clients      = JSON.parse(JSON.stringify(entry.clients));
   S.transactions = JSON.parse(JSON.stringify(entry.transactions));
   lsSet('crm_clients', S.clients);
   lsSet('crm_tx', S.transactions);
 
-  // Firebase 동기화
-  (async()=>{
-    try{
-      if(db){
-        await saveC(); await saveTX();
-        showToast('✅ 복구 완료 (클라우드 동기화됨)');
-      } else {
-        showToast('✅ 복구 완료 (로컬 저장)');
-      }
-    }catch(e){ showToast('✅ 복구 완료 (클라우드 오류)'); }
-  })();
+  try{
+    if(db){
+      await saveC(); await saveTX();
+      showToast('✅ 복구 완료 (클라우드 동기화됨)');
+    } else {
+      showToast('✅ 복구 완료 (로컬 저장)');
+    }
+  }catch(e){ showToast('✅ 복구 완료 (클라우드 오류)'); }
 
   closeBackupModal();
   render();
 }
 
-/** 백업 삭제 */
-function deleteBackup(id){
+/** 백업 삭제 (localStorage + Firebase) */
+async function deleteBackup(id){
   if(!confirm('이 백업을 삭제할까요?')) return;
-  _saveBackups(_getBackups().filter(b => b.id !== id));
-  M.backupModal = { tab: 'list' };
+  _saveBackupsLocal(_getBackups().filter(b => b.id !== id));
+  _fbDeleteBackup(id);
+  M.backupModal = { tab: 'list', loading: false };
   renderModals();
   showToast('백업이 삭제됐습니다.');
 }
 
 /** 수동 백업 생성 */
-function createManualBackup(){
+async function createManualBackup(){
   const label = `MANUAL_${localDate()}_${Date.now().toString().slice(-4)}`;
-  _createBackup(label);
-  M.backupModal = { tab: 'list' };
+  M.backupModal = { tab: 'list', loading: true };
+  renderModals();
+  await _createBackup(label);
+  M.backupModal = { tab: 'list', loading: false };
   renderModals();
   showToast('💾 수동 백업이 생성됐습니다.');
 }
@@ -3343,6 +3404,18 @@ function downloadBackup(id){
 /** 백업 모달 HTML 빌드 */
 function buildBackupModal(){
   if(!M.backupModal) return '';
+
+  // 로딩 중 표시
+  if(M.backupModal.loading){
+    return `
+    <div onclick="closeBackupModal()" style="position:fixed;inset:0;background:rgba(15,23,42,.45);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);z-index:1100;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;">
+      <div onclick="event.stopPropagation()" style="background:#fff;border-radius:16px;width:100%;max-width:460px;padding:48px 20px;display:flex;flex-direction:column;align-items:center;gap:12px;box-shadow:0 20px 60px rgba(0,0,0,.25);">
+        <div style="font-size:28px;">🗄️</div>
+        <div style="font-size:13px;color:#64748b;">Firebase에서 백업 목록을 불러오는 중...</div>
+      </div>
+    </div>`;
+  }
+
   const backups = _getBackups();
   const typeIcon = lbl => lbl.startsWith('AUTO') ? '🗄️' : lbl.startsWith('BEFORE_RESTORE') ? '🔄' : '💾';
   const typeLabel = lbl => {
@@ -3394,6 +3467,7 @@ function buildBackupModal(){
           <div>
             <div style="font-weight:700;font-size:15px;color:#0f172a;">🗄️ 자동 백업 관리</div>
             <div style="font-size:11px;color:#94a3b8;margin-top:2px;">다음 자동 백업: ${nextBackup} · 최대 ${BACKUP_MAX}개 보관</div>
+            <div style="font-size:10px;margin-top:3px;color:${db?'#16a34a':'#f59e0b'};">${db?'☁️ Firebase 저장됨':'📴 로컬 저장 (오프라인)'}</div>
           </div>
           <button onclick="closeBackupModal()" style="background:none;border:none;cursor:pointer;color:#94a3b8;padding:4px;">${I.x}</button>
         </div>
