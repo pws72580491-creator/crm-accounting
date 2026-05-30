@@ -265,7 +265,7 @@ const ISX=`background:#fff;border:1px solid #cbd5e1;color:#0f172a;border-radius:
 const FB=`onfocus="this.style.borderColor='#d97706'" onblur="this.style.borderColor='#cbd5e1'"`;
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let S={view:'dashboard',clients:[],transactions:[],cSearch:'',cFilter:'전체',cExpanded:null,txSearch:'',txTf:'전체',txSf:'전체',txMonth:thisMonth(),txPeriodMode:'monthly',txDate:localDate(),txWeek:null,drawerOpen:false};
+let S={view:'dashboard',clients:[],transactions:[],cSearch:'',cFilter:'전체',cExpanded:null,txSearch:'',txTf:'전체',txSf:'전체',txMonth:thisMonth(),txPeriodMode:'daily',txDate:localDate(),txWeek:null,drawerOpen:false};
 let M={clientModal:null,txModal:null,confirm:null,scanModal:null,syncModal:null,qpModal:null,batchPayModal:null,statModal:null,resetModal:null};
 
 // ── Toast (최상단 정의 - saveC/saveTX에서 사용) ───────────────────────────────
@@ -1000,7 +1000,7 @@ function buildTransactions(){
       &&(S.txTf==='전체'||t.type===S.txTf)
       &&(S.txSf==='전체'||t.status===S.txSf)
       &&matchAny(S.txSearch,cl?.name,t.memo);
-  }).sort((a,b)=>b.date.localeCompare(a.date));
+  }).sort((a,b)=>b.date.localeCompare(a.date)||b.id-a.id);
 
   const sumRev=filtered.filter(t=>t.type==='매출').reduce((s,t)=>s+t.amount,0);
   const sumPur=filtered.filter(t=>t.type==='매입').reduce((s,t)=>s+t.amount,0);
@@ -1097,7 +1097,7 @@ function buildTransactions(){
         (dayRev>0?'<span style="color:#16a34a;">↑'+fmtW(dayRev)+'</span> ':'')+
         (dayPur>0?'<span style="color:#dc2626;">↓'+fmtW(dayPur)+'</span>':'')+
         '</span></div>';
-      rows+=dayTxs.map(tx=>_buildTxRow(tx,true)).join('');
+      rows+=dayTxs.slice().sort((a,b)=>b.id-a.id).map(tx=>_buildTxRow(tx,true)).join('');
     });
   } else {
     rows=filtered.map(tx=>_buildTxRow(tx,false)).join('');
