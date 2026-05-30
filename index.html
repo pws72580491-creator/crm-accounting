@@ -149,6 +149,9 @@ main{
   .pad-main{padding:14px 12px!important;}
   .page-title{font-size:16px!important;}
 }
+/* datalist 역삼각형 제거 */
+#tf_clientName::-webkit-calendar-picker-indicator{display:none!important;}
+#tf_clientName::-webkit-list-button{display:none!important;}
 </style>
 </head>
 <body>
@@ -265,7 +268,7 @@ const ISX=`background:#fff;border:1px solid #cbd5e1;color:#0f172a;border-radius:
 const FB=`onfocus="this.style.borderColor='#d97706'" onblur="this.style.borderColor='#cbd5e1'"`;
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let S={view:'dashboard',clients:[],transactions:[],cSearch:'',cFilter:'전체',cExpanded:null,txSearch:'',txTf:'전체',txSf:'전체',txMonth:thisMonth(),txPeriodMode:'daily',txDate:localDate(),txWeek:null,drawerOpen:false};
+let S={view:'dashboard',clients:[],transactions:[],cSearch:'',cFilter:'전체',cExpanded:null,txSearch:'',txTf:'전체',txSf:'전체',txWsFilter:'전체',txMonth:thisMonth(),txPeriodMode:'daily',txDate:localDate(),txWeek:null,drawerOpen:false};
 let M={clientModal:null,txModal:null,confirm:null,scanModal:null,syncModal:null,qpModal:null,batchPayModal:null,statModal:null,resetModal:null};
 
 // ── Toast (최상단 정의 - saveC/saveTX에서 사용) ───────────────────────────────
@@ -1173,34 +1176,53 @@ function buildTransactions(){
     return true;
   };
 
-  // 거래처 → 워크스페이스 ID 매핑 (거래처 탭과 동일 로직)
+  // 워크스페이스 순서 맵
   const _txWsWorkspaces = _getWorkspaces();
   const _txWsOrder = {};
   _txWsWorkspaces.forEach((w, i) => { _txWsOrder[w.id] = i; });
-  function _txClientWsIdx(clientId){
-    const t = S.transactions.find(t => t.clientId === clientId && t._napumId);
-    if(!t) return 9999;
-    const sep = t._napumId.lastIndexOf(':');
-    const wsId = sep > -1 ? t._napumId.slice(0, sep) : null;
-    return (wsId !== null && _txWsOrder[wsId] !== undefined) ? _txWsOrder[wsId] : 9999;
+
+  // 거래(tx) 자체의 _napumId에서 wsId를 추출해 순서 반환
+  // clientId 기반이 아닌 tx 기반으로 판단해야 같은 이름의 거래처가 다른 WS에 등록된 경우도 정확히 처리
+  function _txWsIdx(tx){
+    if(!tx._napumId) return 9999;
+    const sep = tx._napumId.lastIndexOf(':');
+    const wsId = sep > -1 ? tx._napumId.slice(0, sep) : null;
+    return (wsId !== null && _txWsOrder[wsId] !== undefined) ? _txWsOrder[wsId] : 9998;
+  }
+  // 거래처명 캐시 (매 정렬마다 find 반복 방지)
+  const _clientNameCache = {};
+  S.clients.forEach(c => { _clientNameCache[c.id] = c.name || ''; });
+
+  function _txSortKey(tx){
+    return [
+      tx.date,                          // 날짜 (내림차순이므로 비교 시 반전)
+      _txWsIdx(tx),                     // WS 등록 순
+      _clientNameCache[tx.clientId]||'',// 거래처명 가나다
+      tx.id,                            // 동일 거래처 내 등록순
+    ];
   }
 
   const filtered=[...S.transactions].filter(t=>{
     const cl=S.clients.find(c=>c.id===t.clientId);
-    return dateOk(t)
+    // WS 필터: '전체'가 아니면 해당 wsId의 거래만
+    const wsOk = S.txWsFilter==='전체' || _txWsIdx(t) === _txWsOrder[S.txWsFilter];
+    return wsOk
+      &&dateOk(t)
       &&(S.txTf==='전체'||t.type===S.txTf)
       &&(S.txSf==='전체'||t.status===S.txSf)
       &&matchAny(S.txSearch,cl?.name,t.memo);
   }).sort((a,b)=>{
+    // 1. 날짜 내림차순
     const dateCmp = b.date.localeCompare(a.date);
     if(dateCmp !== 0) return dateCmp;
-    // 같은 날짜: 워크스페이스 등록 순
-    const wsCmp = _txClientWsIdx(a.clientId) - _txClientWsIdx(b.clientId);
+    // 2. 같은 날짜: WS 등록 순
+    const wsCmp = _txWsIdx(a) - _txWsIdx(b);
     if(wsCmp !== 0) return wsCmp;
-    // 같은 워크스페이스: 거래처명 가나다순
-    const ca = S.clients.find(c=>c.id===a.clientId);
-    const cb = S.clients.find(c=>c.id===b.clientId);
-    return (ca?.name||'').localeCompare(cb?.name||'','ko');
+    // 3. 같은 WS: 거래처명 가나다
+    const nameCmp = (_clientNameCache[a.clientId]||'').localeCompare(_clientNameCache[b.clientId]||'','ko');
+    if(nameCmp !== 0) return nameCmp;
+    // 4. 동일 거래처: 거래 id 오름차순 (등록순)
+    return a.id - b.id;
   });
 
   const sumRev=filtered.filter(t=>t.type==='매출').reduce((s,t)=>s+t.amount,0);
@@ -1268,6 +1290,20 @@ function buildTransactions(){
     mode==='monthly' ? fmtMonth(S.txMonth) :
     '전체 기간';
 
+  // ── WS 필터 버튼 (동기화된 워크스페이스가 2개 이상일 때만 표시)
+  const _wsList = _txWsWorkspaces; // 이미 buildTransactions 상단에서 선언됨
+  const wsBtns = _wsList.length >= 1
+    ? ['전체', ..._wsList.map(w=>w.id)].map(wsId=>{
+        const a = S.txWsFilter === wsId;
+        const label = wsId === '전체' ? '전체' : (_wsList.find(w=>w.id===wsId)?.label || wsId);
+        return '<button onclick="setTxWsFilter(\''+wsId+'\')"'+
+          ' style="padding:5px 10px;border-radius:8px;font-size:11px;font-weight:'+(a?700:500)+';'+
+          'background:'+(a?'#0f172a':'#f8fafc')+';color:'+(a?'#fff':'#64748b')+';'+
+          'border:1px solid '+(a?'#0f172a':'#e2e8f0')+';cursor:pointer;white-space:nowrap;">'+
+          (wsId==='전체'?'전체':'📦 '+esc(label))+'</button>';
+      }).join('')
+    : '';
+
   // ── 필터 버튼
   const typeBtns=['전체','매출','매입'].map(t=>{const a=S.txTf===t;return'<button onclick="setTxTf(\''+t+'\')"'+' style="padding:7px 10px;border-radius:8px;font-size:12px;font-weight:'+(a?700:400)+';background:'+(a?'#d97706':'#f8fafc')+';color:'+(a?'#fff':'#64748b')+';border:1px solid '+(a?'#d97706':'#e2e8f0')+';cursor:pointer;">'+t+'</button>';}).join('');
   const stBtns=['전체','미수금','수금완료','미지급금','지급완료'].map(s=>{const a=S.txSf===s;return'<button onclick="setTxSf(\''+s+'\')"'+' style="padding:7px 9px;border-radius:8px;font-size:11px;font-weight:'+(a?700:400)+';background:'+(a?'#d97706':'#f8fafc')+';color:'+(a?'#fff':'#64748b')+';border:1px solid '+(a?'#d97706':'#e2e8f0')+';cursor:pointer;">'+s+'</button>';}).join('');
@@ -1299,11 +1335,11 @@ function buildTransactions(){
         (dayPur>0?'<span style="color:#dc2626;">↓'+fmtW(dayPur)+'</span>':'')+
         '</span></div>';
       rows+=dayTxs.slice().sort((a,b)=>{
-        const wsCmp = _txClientWsIdx(a.clientId) - _txClientWsIdx(b.clientId);
+        const wsCmp = _txWsIdx(a) - _txWsIdx(b);
         if(wsCmp !== 0) return wsCmp;
-        const ca = S.clients.find(c=>c.id===a.clientId);
-        const cb = S.clients.find(c=>c.id===b.clientId);
-        return (ca?.name||'').localeCompare(cb?.name||'','ko');
+        const nameCmp = (_clientNameCache[a.clientId]||'').localeCompare(_clientNameCache[b.clientId]||'','ko');
+        if(nameCmp !== 0) return nameCmp;
+        return a.id - b.id;
       }).map(tx=>_buildTxRow(tx,true)).join('');
     });
   } else {
@@ -1329,6 +1365,9 @@ function buildTransactions(){
       '<div style="display:flex;gap:4px;flex-wrap:wrap;">'+typeBtns+'</div>'+
       '<div style="display:flex;gap:4px;flex-wrap:wrap;">'+stBtns+'</div>'+
     '</div>'+
+    (wsBtns?'<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;">'+
+      '<span style="font-size:11px;color:#94a3b8;white-space:nowrap;">거래처:</span>'+wsBtns+
+    '</div>':'')+
     '<div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">'+
       '<div style="display:flex;padding:9px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0;gap:8px;">'+
         (!grouped?'<span class="col-date" style="color:#94a3b8;font-size:11px;font-weight:500;">날짜</span>':'')+
@@ -1584,14 +1623,15 @@ function buildTxModal(){
   const m=M.txModal;
   const isEd=m!=='add'&&typeof m==='object';
   const f=isEd?m:{date:today(),clientId:S.clients[0]?.id||1,type:'매출',amount:'',tax:'',memo:'',status:'미수금'};
-  const clientOpts=S.clients.map(c=>`<option value="${c.id}" ${c.id===f.clientId?'selected':''}>${esc(c.name)}</option>`).join('');
+  const initClientName = isEd ? (S.clients.find(c=>c.id===f.clientId)?.name||'') : '';
+  const clientOpts=S.clients.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
   const stOpts=(f.type==='매출'?['미수금','수금완료']:['미지급금','지급완료']).map(s=>`<option ${s===f.status?'selected':''}>${esc(s)}</option>`).join('');
   const preview=f.amount>0?`<div id="txTotal" style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 14px;margin-top:12px;display:flex;justify-content:space-between;align-items:center;"><span style="color:#16a34a;font-size:12px;">합계 금액</span><span style="color:#16a34a;font-weight:700;font-size:16px;">${fmtW((+f.amount||0)+(+f.tax||0))}</span></div>`:`<div id="txTotal"></div>`;
   const content=`
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
       <div><label style="font-size:12px;color:#64748b;">거래일자<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><input id="tf_date" type="date" value="${esc(f.date)}" style="${ISX}"></div></div>
       <div><label style="font-size:12px;color:#64748b;">구분<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><select id="tf_type" onchange="onTxType(this.value)" style="${ISX}"><option ${f.type==='매출'?'selected':''}>매출</option><option ${f.type==='매입'?'selected':''}>매입</option></select></div></div>
-      <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">거래처<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><select id="tf_clientId" style="${ISX}">${clientOpts}</select></div></div>
+      <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">거래처<span style="color:#dc2626">*</span></label><div style="margin-top:4px;position:relative;"><input id="tf_clientName" list="tf_clientList" value="${esc(initClientName)}" placeholder="거래처명 입력 또는 선택…" autocomplete="off" oninput="_onTxClientInput(this.value)" onkeydown="if(event.key==='Enter'||event.keyCode===13){this.blur();}" style="${ISX}"><datalist id="tf_clientList">${clientOpts}</datalist><input type="hidden" id="tf_clientId" value="${isEd?f.clientId:''}"></div></div>
       <div><label style="font-size:12px;color:#64748b;">공급가액<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><input id="tf_amount" value="${f.amount?fmt(f.amount):''}" oninput="onTxAmt(this.value)" placeholder="0" style="${ISX}" ${FB}></div></div>
       <div><label style="font-size:12px;color:#64748b;">세액 (자동계산)</label><div style="margin-top:4px;"><input id="tf_tax" value="${f.tax?fmt(f.tax):''}" oninput="onTxTax(this.value)" placeholder="0" style="${ISX}" ${FB}></div></div>
       <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">적요</label><div style="margin-top:4px;"><input id="tf_memo" value="${esc(f.memo||'')}" placeholder="거래 내용" style="${ISX}" ${FB}></div></div>
@@ -3259,6 +3299,7 @@ function setRcvSearch(v){
 function toggleExpand(id){S.cExpanded=S.cExpanded===id?null:id;render();}
 function setTxSearch(v){S.txSearch=v;renderContent();}
 function setTxTf(v){S.txTf=v;render();}
+function setTxWsFilter(v){S.txWsFilter=v;render();}
 function setTxSf(v){S.txSf=v;render();}
 function setTxMonth(v){S.txMonth=v;render();}
 function setTxPeriodMode(mode){
@@ -3315,9 +3356,21 @@ function openTxModal(x){M.txModal=x==='add'?'add':S.transactions.find(t=>t.id===
 function closeTxModal(){M.txModal=null;renderModals();}
 function editTx(id){openTxModal(id);}
 
+function _onTxClientInput(val){
+  // datalist에서 선택한 경우 option value(id)로 hidden 필드 갱신
+  const matched=S.clients.find(c=>c.name===val.trim());
+  const hidEl=document.getElementById('tf_clientId');
+  if(hidEl) hidEl.value=matched?matched.id:'';
+}
 function submitTxModal(existId){
   const dateVal=document.getElementById('tf_date')?.value;
-  const clientId=Number(document.getElementById('tf_clientId')?.value);
+  // 숨김 필드(datalist 선택) 우선, 없으면 이름으로 매칭
+  let clientId=Number(document.getElementById('tf_clientId')?.value)||0;
+  if(!clientId){
+    const nameVal=(document.getElementById('tf_clientName')?.value||'').trim();
+    const matched=S.clients.find(c=>c.name===nameVal);
+    if(matched) clientId=matched.id;
+  }
   const amtRaw=(document.getElementById('tf_amount')?.value||'').replace(/[^0-9]/g,'');
   const taxRaw=(document.getElementById('tf_tax')?.value||'').replace(/[^0-9]/g,'');
   if(!dateVal){showToast('거래일자를 입력하세요.');return;}
