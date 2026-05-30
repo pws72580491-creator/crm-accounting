@@ -8,7 +8,13 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="거래·회계">
+<meta name="theme-color" content="#0f172a">
 <title>거래처·회계 관리 시스템</title>
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icons/icon-152x152.png">
+<link rel="apple-touch-icon" sizes="192x192" href="/icons/icon-192x192.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192x192.png">
 <!-- Firebase SDK는 JS에서 동적 로딩 (로드 실패해도 앱 동작) -->
 <style>
 /* ── Reset ─────────────────────────────────────────────────────────────── */
@@ -2992,6 +2998,16 @@ document.addEventListener('click', e=>{
   const cn=el.getAttribute('data-cn');
   if(cn) openStatModal(cn);
 });
+</script>
+
+<script>
+if('serviceWorker' in navigator){
+  window.addEventListener('load', ()=>{
+    navigator.serviceWorker.register('/sw.js')
+      .then(r=>console.info('SW 등록:', r.scope))
+      .catch(e=>console.warn('SW 실패:', e));
+  });
+}
 </script>
 </body>
 </html>
