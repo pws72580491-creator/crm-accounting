@@ -360,9 +360,7 @@ async function loadData(){
   S.clients     =lsGet('crm_clients',SAMPLE_CLIENTS);
   S.transactions=lsGet('crm_tx',SAMPLE_TX);
 
-  // ── 마이그레이션: 납품 연동 거래의 잘못된 tax 보정
-  // _napumId가 있는 거래는 o.total을 공급가액으로 착각해 tax=amount*0.1이 추가됐었음
-  // 올바른 상태: amount=o.total(부가세포함 최종금액), tax=0
+  // ── 마이그레이션 1: 납품 연동 거래의 잘못된 tax 보정
   let _migrated=false;
   S.transactions=S.transactions.map(t=>{
     if(t._napumId && t.tax>0 && Math.round(t.amount*0.1)===t.tax){
@@ -373,7 +371,16 @@ async function loadData(){
   });
   if(_migrated){
     lsSet('crm_tx',S.transactions);
-    console.info('[마이그레이션] 납품 연동 거래의 tax 자동 보정 완료');
+    console.info('[마이그레이션1] 납품 연동 거래의 tax 자동 보정 완료');
+  }
+
+  // ── 마이그레이션 2: isVoid(타인거래) 누락 건 재동기화 유도
+  // 기존에 isVoid=true 거래를 스킵했으므로 synced 캐시를 초기화해 재확인
+  const _syncedMigKey='crm_napum_void_migrated_v1';
+  if(!lsGet(_syncedMigKey, false)){
+    lsSet('crm_napum_synced',[]);
+    lsSet(_syncedMigKey, true);
+    console.info('[마이그레이션2] 타인거래 재동기화를 위해 synced 캐시 초기화');
   }
 
   try{ render(); }catch(e){ console.error('render 오류:',e); }
@@ -536,7 +543,8 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj){
 
   // 주문 처리
   orders.forEach(o => {
-    if(o.isVoid || !o.date || !o.total) return;
+    // isVoid = 타인거래 (취소 아님) → 수금 처리 가능하므로 CRM에도 포함
+    if(!o.date || !o.total) return;
 
     const napumClient = napumClients.find(c => String(c.id) === String(o.clientId));
     const crmName = o.clientName || (napumClient?.name || '');
@@ -544,7 +552,7 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj){
     if(!crmClientId) return;
 
     const memoItems = (o.items||[]).map(i=>`${i.name}${i.qty>1?` ×${i.qty}`:''}`).join(', ');
-    const memo = `[${ws.label}] ${o.note||(memoItems||'납품')}`;
+    const memo = `[${ws.label}]${o.isVoid?' [타인]':''} ${o.note||(memoItems||'납품')}`;
     const amount = Number(o.total) || 0;
     const tax = 0;
     const status = o.isPaid ? '수금완료' : '미수금';
@@ -2015,7 +2023,7 @@ async function doSyncFromDelivery(){
 
         // 거래 처리
         napumOrders.forEach(o=>{
-          if(o.isVoid) return;
+          // isVoid = 타인거래 (취소 아님) → 수금 처리 가능하므로 CRM에도 포함
           if(!o.date||!o.total) return;
 
           const napumClient=napumClients.find(c=>String(c.id)===String(o.clientId));
@@ -2024,7 +2032,7 @@ async function doSyncFromDelivery(){
           if(!crmClientId) return;
 
           const memoItems=(o.items||[]).map(i=>`${i.name}${i.qty>1?` ×${i.qty}`:''}`).join(', ');
-          const memo=`[${ws.label}] ${o.note||(memoItems||'납품')}`;
+          const memo=`[${ws.label}]${o.isVoid?' [타인]':''} ${o.note||(memoItems||'납품')}`;
           // o.total = 납품앱의 부가세 포함 최종 청구금액
           // CRM에서 tax를 별도 계산하면 금액이 뻥튀기되므로 tax=0으로 저장
           const amount=Number(o.total)||0;
