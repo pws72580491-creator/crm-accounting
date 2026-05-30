@@ -1223,6 +1223,7 @@ function buildTransactions(){
 
   // 워크스페이스 순서 맵
   const _txWsWorkspaces = _getWorkspaces();
+  _cachedWsCount = _txWsWorkspaces.length; // _buildTxRow 캐시 갱신
   const _txWsOrder = {};
   _txWsWorkspaces.forEach((w, i) => { _txWsOrder[w.id] = i; });
 
@@ -1429,12 +1430,16 @@ function buildTransactions(){
   '</div>';
 }
 
+// buildTransactions 호출 시 갱신되는 WS 캐시 (행 렌더 시 반복 호출 방지)
+let _cachedWsCount = -1;
+function _hasWorkspaces(){ return _cachedWsCount > 0; }
+
 function _buildTxRow(tx,hideDate){
   const cl=S.clients.find(c=>c.id===tx.clientId);
   const color=tx.type==='매출'?'#16a34a':'#dc2626';
   const cName=cl?.name||'?';
   const safeAttr=cName.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
-  const canStat=!!(tx._napumId||_getWorkspaces().length>0);
+  const canStat=!!(tx._napumId||_hasWorkspaces());
   const clientNameHtml=canStat
     ?'<span class="stat-trigger" data-cn="'+safeAttr+'" style="cursor:pointer;border-bottom:1px dashed #d97706;color:#0f172a;" title="\uD83D\uDCCB \uB0A9\uD488 \uBA85\uC138\uD45C">'+esc(cName)+'</span>'
     :'<span style="color:#0f172a;">'+esc(cName)+'</span>';
@@ -1461,75 +1466,6 @@ function buildReceivables(){
   const totalRec = rec.reduce((s,t) => s + _txRemain(t), 0);
   const totalPay = pay.reduce((s,t) => s + _txRemain(t), 0);
   const q = S.rcvSearch || '';
-
-  // 거래처별 그룹화 + 검색 필터
-  function groupByClient(items){
-    const map = {};
-    items.forEach(t => {
-      const cl = S.clients.find(c => c.id === t.clientId);
-      if(q && !matchAny(q, cl?.name)) return; // 초성 검색 필터
-      const key = t.clientId;
-      if(!map[key]) map[key] = { clientId: key, txs: [], clName: cl?.name || '?' };
-      map[key].txs.push(t);
-    });
-    return Object.values(map).sort((a,b) => {
-      const ra = a.txs.reduce((s,t) => s + _txRemain(t), 0);
-      const rb = b.txs.reduce((s,t) => s + _txRemain(t), 0);
-      return rb - ra;
-    });
-  }
-
-  function section(title, items, color, bg, bd, isSales){
-    const groups = groupByClient(items);
-    const sectionTotal = fmtW(groups.reduce((s,g) => s + g.txs.reduce((ss,t) => ss + _txRemain(t), 0), 0));
-
-    if(groups.length === 0) return `
-      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;background:${bg};border-bottom:1px solid ${bd};">
-          <h3 style="color:${color};font-weight:600;font-size:14px;">${esc(title)}</h3>
-          <span style="color:${color};font-weight:700;">${sectionTotal}</span>
-        </div>
-        <div style="padding:28px 0;text-align:center;color:#94a3b8;font-size:13px;">${q ? '검색 결과 없음' : '없음'}</div>
-      </div>`;
-
-    const groupRows = groups.map(g => {
-      const cl = S.clients.find(c => c.id === g.clientId);
-      const groupRemain = g.txs.reduce((s,t) => s + _txRemain(t), 0);
-      const txCount = g.txs.length;
-      // 가장 오래된 미수금 날짜
-      const oldestDate = g.txs.map(t => t.date).sort()[0];
-      const daysOldest = Math.floor((Date.now() - new Date(oldestDate)) / 86400000);
-      const urgColor = daysOldest >= 60 ? '#dc2626' : daysOldest >= 30 ? '#b45309' : '#64748b';
-      const urgBg = daysOldest >= 60 ? '#fee2e2' : daysOldest >= 30 ? '#fef3c7' : '#f1f5f9';
-
-      return `
-        <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid #f1f5f9;gap:10px;">
-          <div style="flex:1;min-width:0;">
-            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
-              <span style="font-weight:700;color:#0f172a;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(cl?.name||'?')}</span>
-              <span style="font-size:10px;color:#94a3b8;">${txCount}건</span>
-              <span style="font-size:10px;background:${urgBg};color:${urgColor};padding:1px 6px;border-radius:4px;font-weight:600;">${daysOldest}일 경과</span>
-            </div>
-          </div>
-          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
-            <span style="color:${color};font-weight:700;font-size:15px;">${fmtW(groupRemain)}</span>
-            ${isSales ? `<button onclick="openBatchPay(${g.clientId})"
-              style="padding:5px 10px;border:none;background:${color};color:#fff;border-radius:7px;font-size:11px;cursor:pointer;font-weight:600;white-space:nowrap;">
-              💰 수금
-            </button>` : ''}
-          </div>
-        </div>`;
-    }).join('');
-
-    return `
-      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;background:${bg};border-bottom:1px solid ${bd};">
-          <h3 style="color:${color};font-weight:600;font-size:14px;">${esc(title)}</h3>
-          <span style="color:${color};font-weight:700;font-size:16px;">${sectionTotal}</span>
-        </div>
-        ${groupRows}
-      </div>`;
-  }
 
   return `
     <div style="display:flex;flex-direction:column;gap:16px;">
@@ -1561,8 +1497,7 @@ function buildReceivables(){
       </div>
 
       <div id="rcvListArea">
-        ${section('미수금 (받을 돈)', rec, '#b45309', '#fefce8', '#fcd34d', true)}
-        ${section('미지급금 (줄 돈)', pay, '#dc2626', '#fff1f2', '#fecdd3', false)}
+        ${_buildRcvSections()}
       </div>
     </div>`;
 }
@@ -1607,7 +1542,7 @@ function _buildRcvSections(){
       const urgColor = daysOldest>=60?'#dc2626':daysOldest>=30?'#b45309':'#64748b';
       const urgBg = daysOldest>=60?'#fee2e2':daysOldest>=30?'#fef3c7':'#f1f5f9';
       return `
-        <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid #f1f5f9;gap:10px;">
+        <div onclick="S.txSearch='';S.txTf='전체';S.txSf='전체';S.txPeriodMode='all';S.txMonth='전체';S.view='transactions';render()" class="hover-row" style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid #f1f5f9;gap:10px;cursor:pointer;">
           <div style="flex:1;min-width:0;">
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
               <span style="font-weight:700;color:#0f172a;font-size:13px;">${esc(cl?.name||'?')}</span>
@@ -1615,7 +1550,7 @@ function _buildRcvSections(){
               <span style="font-size:10px;background:${urgBg};color:${urgColor};padding:1px 6px;border-radius:4px;font-weight:600;">${daysOldest}일 경과</span>
             </div>
           </div>
-          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;" onclick="event.stopPropagation()">
             <span style="color:${color};font-weight:700;font-size:15px;">${fmtW(groupRemain)}</span>
             ${isSales?`<button onclick="openBatchPay(${g.clientId})" style="padding:5px 10px;border:none;background:${color};color:#fff;border-radius:7px;font-size:11px;cursor:pointer;font-weight:600;white-space:nowrap;">💰 수금</button>`:''}
           </div>
@@ -1676,7 +1611,7 @@ function buildTxModal(){
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
       <div><label style="font-size:12px;color:#64748b;">거래일자<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><input id="tf_date" type="date" value="${esc(f.date)}" style="${ISX}"></div></div>
       <div><label style="font-size:12px;color:#64748b;">구분<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><select id="tf_type" onchange="onTxType(this.value)" style="${ISX}"><option ${f.type==='매출'?'selected':''}>매출</option><option ${f.type==='매입'?'selected':''}>매입</option></select></div></div>
-      <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">거래처<span style="color:#dc2626">*</span></label><div style="margin-top:4px;position:relative;"><input id="tf_clientName" list="tf_clientList" value="${esc(initClientName)}" placeholder="거래처명 입력 또는 선택…" autocomplete="off" oninput="_onTxClientInput(this.value)" onkeydown="if(event.key==='Enter'||event.keyCode===13){this.blur();}" style="${ISX}"><datalist id="tf_clientList">${clientOpts}</datalist><input type="hidden" id="tf_clientId" value="${isEd?f.clientId:''}"></div></div>
+      <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">거래처<span style="color:#dc2626">*</span></label><div style="margin-top:4px;position:relative;"><input id="tf_clientName" list="tf_clientList" value="${esc(initClientName)}" placeholder="거래처명 입력 또는 선택…" autocomplete="off" oninput="_onTxClientInput(this.value)" onchange="_onTxClientInput(this.value)" onkeydown="if(event.key==='Enter'||event.keyCode===13){this.blur();}" style="${ISX}"><datalist id="tf_clientList">${clientOpts}</datalist><input type="hidden" id="tf_clientId" value="${isEd?f.clientId:''}"></div></div>
       <div><label style="font-size:12px;color:#64748b;">공급가액<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><input id="tf_amount" value="${f.amount?fmt(f.amount):''}" oninput="onTxAmt(this.value)" placeholder="0" style="${ISX}" ${FB}></div></div>
       <div><label style="font-size:12px;color:#64748b;">세액 (자동계산)</label><div style="margin-top:4px;"><input id="tf_tax" value="${f.tax?fmt(f.tax):''}" oninput="onTxTax(this.value)" placeholder="0" style="${ISX}" ${FB}></div></div>
       <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">적요</label><div style="margin-top:4px;"><input id="tf_memo" value="${esc(f.memo||'')}" placeholder="거래 내용" style="${ISX}" ${FB}></div></div>
@@ -3334,7 +3269,6 @@ async function restoreBackup(id){
   const backups = _getBackups();
   let entry = backups.find(b => b.id === id);
 
-  // localStorage에 없으면 Firebase에서 직접 로드
   if(!entry && db){
     try{
       const snap = await db.ref(`${BACKUP_FB_PATH}/${id}`).get();
@@ -3344,7 +3278,24 @@ async function restoreBackup(id){
   if(!entry){ showToast('백업을 찾을 수 없습니다.'); return; }
 
   const dateStr = new Date(entry.date).toLocaleString('ko-KR');
-  if(!confirm(`[${entry.label}]\n${dateStr}\n거래처 ${entry.clients.length}개 / 거래 ${entry.transactions.length}건\n\n이 백업으로 복구할까요?\n현재 데이터는 덮어씌워집니다.`)) return;
+  M.confirm={
+    msg:`[${entry.label}]\n${dateStr}\n거래처 ${entry.clients.length}개 / 거래 ${entry.transactions.length}건\n\n이 백업으로 복구할까요?\n현재 데이터는 덮어씌워집니다.`,
+    okStr:`_doRestoreBackup(${id})`
+  };
+  renderModals();
+}
+
+async function _doRestoreBackup(id){
+  M.confirm=null;
+  const backups = _getBackups();
+  let entry = backups.find(b => b.id === id);
+  if(!entry && db){
+    try{
+      const snap = await db.ref(`${BACKUP_FB_PATH}/${id}`).get();
+      entry = snap.val();
+    }catch(e){}
+  }
+  if(!entry){ showToast('백업을 찾을 수 없습니다.'); return; }
 
   // 복구 전 현재 데이터를 임시 백업
   await _createBackup(`BEFORE_RESTORE_${localDate()}`);
@@ -3369,7 +3320,14 @@ async function restoreBackup(id){
 
 /** 백업 삭제 (localStorage + Firebase) */
 async function deleteBackup(id){
-  if(!confirm('이 백업을 삭제할까요?')) return;
+  M.confirm={
+    msg:'이 백업을 삭제할까요?',
+    okStr:`_doDeleteBackup(${id})`
+  };
+  renderModals();
+}
+async function _doDeleteBackup(id){
+  M.confirm=null;
   _saveBackupsLocal(_getBackups().filter(b => b.id !== id));
   _fbDeleteBackup(id);
   M.backupModal = { tab: 'list', loading: false };
@@ -3720,7 +3678,7 @@ function onTxType(type){
 
   function onStart(e){
     // 모달/드로어 열린 경우 무시
-    if(M.clientModal||M.txModal||M.confirm||M.scanModal||S.drawerOpen)return;
+    if(M.clientModal||M.txModal||M.confirm||M.scanModal||M.syncModal||M.qpModal||M.batchPayModal||M.statModal||M.resetModal||M.backupModal||S.drawerOpen)return;
     const t=e.touches?e.touches[0]:e;
     tx0=t.clientX; ty0=t.clientY; startTime=Date.now(); swiping=true;
   }
