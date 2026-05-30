@@ -911,7 +911,7 @@ function buildClients(){
       ].map(({label,val,color,bg})=>`<div style="background:${bg};border-radius:8px;padding:9px 10px;"><div style="color:#94a3b8;font-size:11px;">${esc(label)}</div><div style="color:${color};font-weight:700;font-size:14px;margin-top:2px;">${esc(val)}</div></div>`).join('');
       const info=[['사업자번호',c.bizNo],['대표자',c.rep],['전화',c.phone],['이메일',c.email],['주소',c.address],['메모',c.memo]]
         .filter(([,v])=>v).map(([k,v])=>`<div style="display:flex;gap:8px;"><span style="color:#94a3b8;min-width:60px;font-size:12px;">${esc(k)}</span><span style="color:#334155;font-size:12px;word-break:break-all;">${esc(v)}</span></div>`).join('');
-      const txHist=[...s.txs].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,5).map(tx=>`
+      const txHist=[...s.txs].sort((a,b)=>a.date.localeCompare(b.date)||a.id-b.id).map(tx=>`
         <div style="display:flex;align-items:center;padding:7px 0;border-bottom:1px solid #f1f5f9;gap:8px;">
           <span style="color:${tx.type==='매출'?'#16a34a':'#dc2626'};font-size:11px;width:28px;flex-shrink:0;">${esc(tx.type)}</span>
           <span style="color:#475569;font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(tx.memo||'-')}</span>
