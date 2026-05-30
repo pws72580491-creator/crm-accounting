@@ -1014,31 +1014,80 @@ function buildDashboard(){
 
 // ── CLIENTS VIEW ──────────────────────────────────────────────────────────────
 function buildClients(){
-  const filtered=S.clients.filter(c=>(S.cFilter==='전체'||c.type===S.cFilter)&&matchAny(S.cSearch,c.name,c.bizNo,c.rep,c.phone,c.memo));
-  const clientStats=id=>{
-    const txs=S.transactions.filter(t=>t.clientId===id);
-    return{txs,rev:txs.filter(t=>t.type==='매출').reduce((s,t)=>s+t.amount,0),pur:txs.filter(t=>t.type==='매입').reduce((s,t)=>s+t.amount,0),pend:txs.filter(t=>t.status==='미수금'||t.status==='미지급금').reduce((s,t)=>s+t.amount+t.tax,0)};
+  // 워크스페이스 목록 (거래처 그룹 정렬용)
+  const workspaces = _getWorkspaces(); // [{id, label}, ...]
+
+  // 거래처에 연결된 워크스페이스 ID 추출 (첫 번째 납품 거래의 _napumId wsId)
+  function clientWsId(clientId){
+    const tx = S.transactions.find(t => t.clientId === clientId && t._napumId);
+    if(!tx) return null;
+    const sep = tx._napumId.lastIndexOf(':');
+    return sep > -1 ? tx._napumId.slice(0, sep) : null;
+  }
+
+  // 워크스페이스 순서 맵 (wsId → 인덱스)
+  const wsOrder = {};
+  workspaces.forEach((w, i) => { wsOrder[w.id] = i; });
+
+  const filtered = S.clients.filter(c =>
+    (S.cFilter === '전체' || c.type === S.cFilter) &&
+    matchAny(S.cSearch, c.name, c.bizNo, c.rep, c.phone, c.memo)
+  );
+
+  // 워크스페이스 ID별 정렬: 등록된 WS 순 → 직접등록(WS없음) 마지막
+  filtered.sort((a, b) => {
+    const wa = clientWsId(a.id);
+    const wb = clientWsId(b.id);
+    const ia = wa !== null && wsOrder[wa] !== undefined ? wsOrder[wa] : 9999;
+    const ib = wb !== null && wsOrder[wb] !== undefined ? wsOrder[wb] : 9999;
+    if(ia !== ib) return ia - ib;
+    return a.name.localeCompare(b.name, 'ko');
+  });
+
+  const clientStats = id => {
+    const txs = S.transactions.filter(t => t.clientId === id);
+    const unpaid = txs.filter(t => t.status === '미수금').reduce((s,t) => s + _txRemain(t), 0);
+    const unpaidPay = txs.filter(t => t.status === '미지급금').reduce((s,t) => s + _txRemain(t), 0);
+    return { txs, unpaid, unpaidPay };
   };
-  const filterBtns=['전체','매출처','매입처','매출/매입'].map(t=>{
-    const a=S.cFilter===t;
+
+  const filterBtns = ['전체','매출처','매입처','매출/매입'].map(t => {
+    const a = S.cFilter === t;
     return `<button onclick="setCFilter('${t}')" style="padding:7px 11px;border-radius:8px;font-size:12px;font-weight:${a?700:400};background:${a?'#d97706':'#f8fafc'};color:${a?'#fff':'#64748b'};border:1px solid ${a?'#d97706':'#e2e8f0'};cursor:pointer;">${esc(t)}</button>`;
   }).join('');
 
-  const rows=filtered.map(c=>{
-    const s=clientStats(c.id);
-    const open=S.cExpanded===c.id;
-    const tc=c.type==='매출처'?'#16a34a':c.type==='매입처'?'#1d4ed8':'#b45309';
-    let expHtml='';
+  // 워크스페이스 그룹 헤더 렌더링용
+  let lastWsGroup = undefined; // undefined = 초기화 전
+  const rows = filtered.map(c => {
+    const s = clientStats(c.id);
+    const open = S.cExpanded === c.id;
+    const tc = c.type==='매출처'?'#16a34a':c.type==='매입처'?'#1d4ed8':'#b45309';
+    const wsId = clientWsId(c.id);
+    const wsLabel = wsId && wsOrder[wsId] !== undefined
+      ? (workspaces.find(w => w.id === wsId)?.label || wsId)
+      : '직접 등록';
+
+    // 그룹 헤더 (워크스페이스가 바뀔 때마다 표시)
+    let groupHeader = '';
+    if(wsLabel !== lastWsGroup){
+      lastWsGroup = wsLabel;
+      const headerColor = wsId ? '#b45309' : '#94a3b8';
+      const headerBg = wsId ? '#fefce8' : '#f8fafc';
+      const headerBd = wsId ? '#fef08a' : '#e2e8f0';
+      groupHeader = `
+        <div style="padding:6px 14px;background:${headerBg};border-bottom:1px solid ${headerBd};border-top:1px solid ${headerBd};">
+          <span style="font-size:11px;font-weight:700;color:${headerColor};">📦 ${esc(wsLabel)}</span>
+        </div>`;
+    }
+
+    let expHtml = '';
     if(open){
-      const mc=[
-        {label:'누적 매출',val:fmtW(s.rev),color:'#16a34a',bg:'#f0fdf4'},
-        {label:'누적 매입',val:fmtW(s.pur),color:'#dc2626',bg:'#fff1f2'},
-        {label:'미결제',val:fmtW(s.pend),color:'#b45309',bg:'#fefce8'},
-        {label:'거래 건수',val:`${s.txs.length}건`,color:'#334155',bg:'#f8fafc'},
-      ].map(({label,val,color,bg})=>`<div style="background:${bg};border-radius:8px;padding:9px 10px;"><div style="color:#94a3b8;font-size:11px;">${esc(label)}</div><div style="color:${color};font-weight:700;font-size:14px;margin-top:2px;">${esc(val)}</div></div>`).join('');
-      const info=[['사업자번호',c.bizNo],['대표자',c.rep],['전화',c.phone],['이메일',c.email],['주소',c.address],['메모',c.memo]]
-        .filter(([,v])=>v).map(([k,v])=>`<div style="display:flex;gap:8px;"><span style="color:#94a3b8;min-width:60px;font-size:12px;">${esc(k)}</span><span style="color:#334155;font-size:12px;word-break:break-all;">${esc(v)}</span></div>`).join('');
-      const txHist=[...s.txs].sort((a,b)=>a.date.localeCompare(b.date)||a.id-b.id).map(tx=>`
+      const allTxs = S.transactions.filter(t => t.clientId === c.id);
+      const info = [['사업자번호',c.bizNo],['대표자',c.rep],['전화',c.phone],['이메일',c.email],['주소',c.address],['메모',c.memo]]
+        .filter(([,v]) => v)
+        .map(([k,v]) => `<div style="display:flex;gap:8px;"><span style="color:#94a3b8;min-width:60px;font-size:12px;">${esc(k)}</span><span style="color:#334155;font-size:12px;word-break:break-all;">${esc(v)}</span></div>`)
+        .join('');
+      const txHist = [...allTxs].sort((a,b) => a.date.localeCompare(b.date) || a.id - b.id).map(tx => `
         <div style="display:flex;align-items:center;padding:7px 0;border-bottom:1px solid #f1f5f9;gap:8px;">
           <span style="color:${tx.type==='매출'?'#16a34a':'#dc2626'};font-size:11px;width:28px;flex-shrink:0;">${esc(tx.type)}</span>
           <span style="color:#475569;font-size:12px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(tx.memo||'-')}</span>
@@ -1046,26 +1095,31 @@ function buildClients(){
           <span style="color:${tx.type==='매출'?'#16a34a':'#dc2626'};font-size:12px;font-weight:600;flex-shrink:0;">${fmtW(tx.amount)}</span>
           <div style="flex-shrink:0;">${statusBadge(tx.status)}</div>
         </div>`).join('');
-      expHtml=`
+      expHtml = `
         <div style="background:#fafafa;border-bottom:1px solid #e2e8f0;padding:14px;">
-          <div class="g4" style="margin-bottom:12px;">${mc}</div>
-          ${info?`<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px 20px;margin-bottom:10px;">${info}</div>`:''}
-          ${s.txs.length?`<div style="color:#94a3b8;font-size:11px;font-weight:500;margin-bottom:5px;">최근 거래 이력</div>${txHist}`:''}
+          ${info ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:5px 20px;margin-bottom:10px;">${info}</div>` : ''}
+          ${allTxs.length ? `<div style="color:#94a3b8;font-size:11px;font-weight:500;margin-bottom:5px;">거래 이력</div>${txHist}` : ''}
         </div>`;
     }
+
+    const unpaidBadge = s.unpaid > 0
+      ? `<span style="font-size:11px;font-weight:700;color:#b45309;">${fmtW(s.unpaid)}</span>`
+      : `<span style="font-size:11px;color:#94a3b8;">—</span>`;
+
     return `
+      ${groupHeader}
       <div>
         <div onclick="toggleExpand(${c.id})" class="hover-row" style="display:flex;align-items:center;padding:12px 14px;border-bottom:1px solid #f1f5f9;cursor:pointer;gap:8px;">
           <div style="flex:1;min-width:0;">
             <div style="display:flex;align-items:center;gap:5px;">
               <span style="color:${open?'#d97706':'#0f172a'};font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c.name)}</span>
-              <span style="color:#94a3b8;flex-shrink:0;">${open?I.chevD:I.chevR}</span>
+              <span style="color:#94a3b8;flex-shrink:0;">${open ? I.chevD : I.chevR}</span>
             </div>
-            <div style="color:#94a3b8;font-size:11px;margin-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c.bizNo||'사업자번호 미등록')} · ${esc(c.phone||'-')}</div>
+            <div style="color:#94a3b8;font-size:11px;margin-top:1px;">
+              <span style="font-size:10px;font-weight:600;color:${tc};">${esc(c.type)}</span>
+            </div>
           </div>
-          <span class="hide-sm" style="width:60px;text-align:center;font-size:11px;font-weight:600;color:${tc};flex-shrink:0;">${esc(c.type)}</span>
-          <span class="hide-sm" style="width:72px;text-align:center;color:#475569;font-size:12px;flex-shrink:0;">${esc(c.rep||'-')}</span>
-          <span style="width:100px;text-align:right;color:#16a34a;font-size:12px;font-weight:600;flex-shrink:0;">${fmtW(s.rev)}</span>
+          <div style="text-align:right;flex-shrink:0;">${unpaidBadge}</div>
           <div style="width:52px;display:flex;justify-content:center;gap:8px;flex-shrink:0;" onclick="event.stopPropagation()">
             <button onclick="editClient(${c.id})" style="color:#94a3b8;background:none;border:none;cursor:pointer;" onmouseenter="this.style.color='#d97706'" onmouseleave="this.style.color='#94a3b8'">${I.edit}</button>
             <button onclick="confirmDelClient(${c.id})" style="color:#94a3b8;background:none;border:none;cursor:pointer;" onmouseenter="this.style.color='#dc2626'" onmouseleave="this.style.color='#94a3b8'">${I.trash}</button>
@@ -1097,12 +1151,10 @@ function buildClients(){
       <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
         <div style="display:flex;padding:9px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0;gap:8px;">
           <span style="flex:1;color:#94a3b8;font-size:11px;font-weight:500;">거래처명</span>
-          <span class="hide-sm" style="width:60px;color:#94a3b8;font-size:11px;text-align:center;">구분</span>
-          <span class="hide-sm" style="width:72px;color:#94a3b8;font-size:11px;text-align:center;">대표자</span>
-          <span style="width:100px;color:#94a3b8;font-size:11px;text-align:right;">누적 매출</span>
+          <span style="color:#94a3b8;font-size:11px;text-align:right;">미수금</span>
           <span style="width:52px;color:#94a3b8;font-size:11px;text-align:center;">관리</span>
         </div>
-        ${filtered.length===0?'<div style="padding:40px 0;text-align:center;color:#94a3b8;font-size:13px;">거래처가 없습니다.</div>':rows}
+        ${filtered.length === 0 ? '<div style="padding:40px 0;text-align:center;color:#94a3b8;font-size:13px;">거래처가 없습니다.</div>' : rows}
       </div>
     </div>`;
 }
@@ -1292,85 +1344,71 @@ function _buildTxRow(tx,hideDate){
 
 // ── RECEIVABLES VIEW ──────────────────────────────────────────────────────────
 function buildReceivables(){
-  const rec=S.transactions.filter(t=>t.status==='미수금');
-  const pay=S.transactions.filter(t=>t.status==='미지급금');
-  const totalRec=rec.reduce((s,t)=>s+_txRemain(t),0);
-  const totalPay=pay.reduce((s,t)=>s+_txRemain(t),0);
+  const rec = S.transactions.filter(t => t.status === '미수금');
+  const pay = S.transactions.filter(t => t.status === '미지급금');
+  const totalRec = rec.reduce((s,t) => s + _txRemain(t), 0);
+  const totalPay = pay.reduce((s,t) => s + _txRemain(t), 0);
+  const q = S.rcvSearch || '';
 
-  // 거래처별 그룹화
+  // 거래처별 그룹화 + 검색 필터
   function groupByClient(items){
-    const map={};
-    items.forEach(t=>{
-      const key=t.clientId;
-      if(!map[key]) map[key]={clientId:key,txs:[]};
+    const map = {};
+    items.forEach(t => {
+      const cl = S.clients.find(c => c.id === t.clientId);
+      if(q && !matchAny(q, cl?.name)) return; // 초성 검색 필터
+      const key = t.clientId;
+      if(!map[key]) map[key] = { clientId: key, txs: [], clName: cl?.name || '?' };
       map[key].txs.push(t);
     });
-    return Object.values(map).sort((a,b)=>{
-      const ra=a.txs.reduce((s,t)=>s+_txRemain(t),0);
-      const rb=b.txs.reduce((s,t)=>s+_txRemain(t),0);
-      return rb-ra;
+    return Object.values(map).sort((a,b) => {
+      const ra = a.txs.reduce((s,t) => s + _txRemain(t), 0);
+      const rb = b.txs.reduce((s,t) => s + _txRemain(t), 0);
+      return rb - ra;
     });
   }
 
-  function section(title,items,color,bg,bd,doneStatus,isSales){
-    const groups=groupByClient(items);
-    if(groups.length===0) return `
+  function section(title, items, color, bg, bd, isSales){
+    const groups = groupByClient(items);
+    const sectionTotal = fmtW(groups.reduce((s,g) => s + g.txs.reduce((ss,t) => ss + _txRemain(t), 0), 0));
+
+    if(groups.length === 0) return `
       <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
-        <div style="padding:13px 16px;background:${bg};border-bottom:1px solid ${bd};">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;background:${bg};border-bottom:1px solid ${bd};">
           <h3 style="color:${color};font-weight:600;font-size:14px;">${esc(title)}</h3>
+          <span style="color:${color};font-weight:700;">${sectionTotal}</span>
         </div>
-        <div style="padding:28px 0;text-align:center;color:#94a3b8;font-size:13px;">없음</div>
+        <div style="padding:28px 0;text-align:center;color:#94a3b8;font-size:13px;">${q ? '검색 결과 없음' : '없음'}</div>
       </div>`;
 
-    const groupRows=groups.map(g=>{
-      const cl=S.clients.find(c=>c.id===g.clientId);
-      const groupRemain=g.txs.reduce((s,t)=>s+_txRemain(t),0);
-      const txRows=g.txs.sort((a,b)=>a.date.localeCompare(b.date)).map(tx=>{
-        const days=Math.floor((new Date()-new Date(tx.date))/86400000);
-        const uc=days>30?'#dc2626':days>7?'#b45309':'#94a3b8';
-        const ucBg=days>30?'#fee2e2':days>7?'#fef3c7':'#f1f5f9';
-        const partial=(tx.paidAmount||0)>0;
-        return `
-          <div style="display:flex;align-items:center;gap:8px;padding:9px 16px 9px 32px;border-bottom:1px solid #f8fafc;">
-            <div style="flex:1;min-width:0;">
-              <div style="display:flex;align-items:center;gap:5px;">
-                <span style="color:#64748b;font-size:12px;">${esc(tx.date)}</span>
-                <span style="color:${uc};font-size:10px;background:${ucBg};padding:1px 5px;border-radius:4px;">${days}일</span>
-                ${partial?`<span style="font-size:10px;background:#eff6ff;color:#1d4ed8;padding:1px 5px;border-radius:4px;">💳 부분</span>`:''}
-              </div>
-              <div style="color:#94a3b8;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(tx.memo||'-')}</div>
-            </div>
-            <div style="text-align:right;flex-shrink:0;">
-              <div style="color:${color};font-weight:600;font-size:12px;">${fmtW(_txRemain(tx))}</div>
-              ${partial?`<div style="color:#94a3b8;font-size:10px;">청구 ${fmtW(tx.amount+tx.tax)}</div>`:''}
-            </div>
-            <button onclick="openQuickPay(${tx.id})"
-              style="padding:5px 9px;background:#f0fdf420;border:1px solid #86efac;color:#16a34a;border-radius:7px;font-size:11px;cursor:pointer;white-space:nowrap;font-weight:600;">
-              ${I.check} 수금
-            </button>
-          </div>`;
-      }).join('');
+    const groupRows = groups.map(g => {
+      const cl = S.clients.find(c => c.id === g.clientId);
+      const groupRemain = g.txs.reduce((s,t) => s + _txRemain(t), 0);
+      const txCount = g.txs.length;
+      // 가장 오래된 미수금 날짜
+      const oldestDate = g.txs.map(t => t.date).sort()[0];
+      const daysOldest = Math.floor((Date.now() - new Date(oldestDate)) / 86400000);
+      const urgColor = daysOldest >= 60 ? '#dc2626' : daysOldest >= 30 ? '#b45309' : '#64748b';
+      const urgBg = daysOldest >= 60 ? '#fee2e2' : daysOldest >= 30 ? '#fef3c7' : '#f1f5f9';
 
       return `
-        <div style="border-bottom:1px solid #f1f5f9;">
-          <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 16px;background:#fafafa;">
-            <div>
-              <span style="font-weight:700;color:#0f172a;font-size:13px;">${esc(cl?.name||'?')}</span>
-              <span style="color:#94a3b8;font-size:11px;margin-left:6px;">${g.txs.length}건</span>
-            </div>
-            <div style="display:flex;align-items:center;gap:8px;">
-              <span style="color:${color};font-weight:700;font-size:14px;">${fmtW(groupRemain)}</span>
-              ${isSales&&g.txs.length>1?`<button onclick="openBatchPay(${g.clientId})"
-                style="padding:5px 10px;border:none;background:${color};color:#fff;border-radius:7px;font-size:11px;cursor:pointer;font-weight:600;">
-                💰 일괄수금
-              </button>`:''}
+        <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid #f1f5f9;gap:10px;">
+          <div style="flex:1;min-width:0;">
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+              <span style="font-weight:700;color:#0f172a;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(cl?.name||'?')}</span>
+              <span style="font-size:10px;color:#94a3b8;">${txCount}건</span>
+              <span style="font-size:10px;background:${urgBg};color:${urgColor};padding:1px 6px;border-radius:4px;font-weight:600;">${daysOldest}일 경과</span>
             </div>
           </div>
-          ${txRows}
+          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+            <span style="color:${color};font-weight:700;font-size:15px;">${fmtW(groupRemain)}</span>
+            ${isSales ? `<button onclick="openBatchPay(${g.clientId})"
+              style="padding:5px 10px;border:none;background:${color};color:#fff;border-radius:7px;font-size:11px;cursor:pointer;font-weight:600;white-space:nowrap;">
+              💰 수금
+            </button>` : ''}
+          </div>
         </div>`;
     }).join('');
 
-    const sectionTotal=fmtW(items.reduce((s,t)=>s+_txRemain(t),0));
     return `
       <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
         <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;background:${bg};border-bottom:1px solid ${bd};">
@@ -1383,24 +1421,35 @@ function buildReceivables(){
 
   return `
     <div style="display:flex;flex-direction:column;gap:16px;">
-      <div>
-        <h1 class="page-title" style="color:#0f172a;font-size:20px;font-weight:700;">채권·채무 관리</h1>
-        <p style="color:#64748b;font-size:12px;margin-top:2px;">미수금 및 미지급금 현황</p>
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+        <div>
+          <h1 class="page-title" style="color:#0f172a;font-size:20px;font-weight:700;">채권·채무 관리</h1>
+          <p style="color:#64748b;font-size:12px;margin-top:2px;">미수금 및 미지급금 현황</p>
+        </div>
       </div>
+
+      <!-- 초성 검색 -->
+      <div style="position:relative;">
+        <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:#94a3b8;pointer-events:none;">${I.search}</span>
+        <input value="${esc(q)}" oninput="setRcvSearch(this.value)" placeholder="거래처 검색… (초성 가능)" style="${ISX}padding-left:30px;" ${FB}>
+      </div>
+
+      <!-- 합계 요약 -->
       <div class="g2">
         <div style="background:#fefce8;border:1px solid #fcd34d;border-radius:12px;padding:16px;">
           <div style="color:#b45309;font-size:12px;margin-bottom:5px;">총 미수금 (받을 돈)</div>
           <div style="color:#b45309;font-size:24px;font-weight:700;">${fmtW(totalRec)}</div>
-          <div style="color:#d97706;font-size:11px;margin-top:3px;opacity:.75;">${rec.length}건 미수금</div>
+          <div style="color:#d97706;font-size:11px;margin-top:3px;opacity:.75;">${rec.length}건</div>
         </div>
         <div style="background:#fff1f2;border:1px solid #fecdd3;border-radius:12px;padding:16px;">
           <div style="color:#dc2626;font-size:12px;margin-bottom:5px;">총 미지급금 (줄 돈)</div>
           <div style="color:#dc2626;font-size:24px;font-weight:700;">${fmtW(totalPay)}</div>
-          <div style="color:#ef4444;font-size:11px;margin-top:3px;opacity:.75;">${pay.length}건 미지급금</div>
+          <div style="color:#ef4444;font-size:11px;margin-top:3px;opacity:.75;">${pay.length}건</div>
         </div>
       </div>
-      ${section('미수금 (받을 돈)',rec,'#b45309','#fefce8','#fcd34d','수금완료',true)}
-      ${section('미지급금 (줄 돈)',pay,'#dc2626','#fff1f2','#fecdd3','지급완료',false)}
+
+      ${section('미수금 (받을 돈)', rec, '#b45309', '#fefce8', '#fcd34d', true)}
+      ${section('미지급금 (줄 돈)', pay, '#dc2626', '#fff1f2', '#fecdd3', false)}
     </div>`;
 }
 
