@@ -203,9 +203,6 @@ const SAMPLE_TX=[
   {id:10,date:"2026-04-15",clientId:5,type:"매입",amount:900000, tax:90000, memo:"소모품 구매",       status:"지급완료"},
 ];
 
-// ── Version ───────────────────────────────────────────────────────────────────
-const APP_VERSION = 'v1.1.0';
-
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const fmt   = n=>new Intl.NumberFormat('ko-KR').format(n||0);
 const fmtW  = n=>`₩${fmt(n)}`;
@@ -358,6 +355,10 @@ async function initFirebase(){
 function lsGet(key,def){try{const v=JSON.parse(localStorage.getItem(key));return v!=null?v:def;}catch{return def;}}
 function lsSet(key,val){try{localStorage.setItem(key,JSON.stringify(val));}catch(e){}}
 
+// ── 앱 버전 ──────────────────────────────────────────────────────────────────
+const APP_VERSION = '2.0.0';
+const APP_BUILD   = '2026-05-31';
+
 const toMap=arr=>arr.reduce((m,o)=>{m[o.id]=o;return m;},{});
 const toArr=map=>Object.values(map||{}).sort((a,b)=>a.id-b.id);
 
@@ -381,12 +382,22 @@ async function loadData(){
   }
 
   // ── 마이그레이션 2: isVoid(타인거래) 누락 건 재동기화 유도
-  // 기존에 isVoid=true 거래를 스킵했으므로 synced 캐시를 초기화해 재확인
   const _syncedMigKey='crm_napum_void_migrated_v1';
   if(!lsGet(_syncedMigKey, false)){
     lsSet('crm_napum_synced',[]);
     lsSet(_syncedMigKey, true);
     console.info('[마이그레이션2] 타인거래 재동기화를 위해 synced 캐시 초기화');
+  }
+
+  // ── 마이그레이션 3: Firebase push key 기반 napumId 전환
+  // 기존 o.id 기반 napumKey → Firebase fbKey 기반으로 변경
+  // synced 캐시 초기화해서 실시간 리스너가 _fbKey로 재등록하도록 유도
+  const _fbKeyMigKey='crm_napum_fbkey_migrated_v1';
+  if(!lsGet(_fbKeyMigKey, false)){
+    lsSet('crm_napum_synced',[]);
+    // 기존 _napumId가 있는 거래는 유지하되 재매핑을 위해 캐시만 초기화
+    lsSet(_fbKeyMigKey, true);
+    console.info('[마이그레이션3] Firebase push key 기반으로 synced 캐시 초기화');
   }
 
   try{ render(); }catch(e){ console.error('render 오류:',e); }
@@ -434,12 +445,6 @@ async function loadData(){
     try{ await db.ref('transactions').set(toMap(S.transactions)); }
     catch(e){ console.warn('마이그레이션 클라우드 반영 실패:',e); }
   }
-
-  // 7) 자동 백업 체크 (15일·말일) + Firebase 백업 목록 동기화
-  setTimeout(async ()=>{
-    await _syncBackupsFromFb();
-    checkAutoBackup();
-  }, 1500);
 }
 
 let _offC=null,_offTX=null;
@@ -524,7 +529,8 @@ function detachNapumListeners(){
 
 // 납품앱 orders 스냅샷을 받아 CRM에 반영
 function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj){
-  const orders = Object.values(ordersObj);
+  // Firebase push key를 orderId로 사용 (o.id 대신 실제 DB key)
+  const orders = Object.entries(ordersObj).map(([fbKey,o])=>({...o,_fbKey:fbKey}));
   const napumClients = Object.values(napumClientsObj);
 
   const nameToId = {};
@@ -568,7 +574,7 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj){
     const amount = Number(o.total) || 0;
     const tax = 0;
     const status = o.isPaid ? '수금완료' : '미수금';
-    const napumKey = `${ws.id}:${o.id}`;
+    const napumKey = `${ws.id}:${o._fbKey||o.id}`;
 
     if(napumIdToCrmId[napumKey]){
       // 기존 전표 업데이트
@@ -752,15 +758,17 @@ function sidebarInner(onClose=''){
       <button onclick="importData()" style="width:100%;display:flex;align-items:center;justify-content:center;gap:7px;padding:7px;border-radius:8px;border:1px solid #e2e8f0;background:#f8fafc;color:#475569;font-size:12px;font-weight:500;cursor:pointer;" onmouseenter="this.style.background='#eff6ff';this.style.color='#1d4ed8';this.style.borderColor='#bfdbfe'" onmouseleave="this.style.background='#f8fafc';this.style.color='#475569';this.style.borderColor='#e2e8f0'">
         ${I.upload} JSON 불러오기
       </button>
+      <button onclick="openBackupModal()" style="width:100%;display:flex;align-items:center;justify-content:center;gap:7px;padding:7px;border-radius:8px;border:1px solid #a855f7;background:#faf5ff;color:#7c3aed;font-size:12px;font-weight:600;cursor:pointer;" onmouseenter="this.style.background='#ede9fe'" onmouseleave="this.style.background='#faf5ff'">
+        💾 자동백업 · 복원
+      </button>
       <button onclick="openSyncModal()" style="width:100%;display:flex;align-items:center;justify-content:center;gap:7px;padding:7px;border-radius:8px;border:1px solid #d97706;background:#fef3c7;color:#b45309;font-size:12px;font-weight:600;cursor:pointer;" onmouseenter="this.style.background='#fde68a'" onmouseleave="this.style.background='#fef3c7'">
         ${I.spark} 납품 관리 연동
       </button>
-      <button onclick="openBackupModal()" style="width:100%;display:flex;align-items:center;justify-content:center;gap:7px;padding:7px;border-radius:8px;border:1px solid #c4b5fd;background:#f5f3ff;color:#7c3aed;font-size:12px;font-weight:500;cursor:pointer;" onmouseenter="this.style.background='#ede9fe';this.style.color='#6d28d9'" onmouseleave="this.style.background='#f5f3ff';this.style.color='#7c3aed'">
-        🗄️ 백업 / 복구
-      </button>
       <div style="text-align:center;color:#cbd5e1;font-size:10px;padding-top:2px;">거래처 ${S.clients.length}개 · ${S.transactions.length}건</div>
-      <div style="text-align:center;color:#e2e8f0;font-size:10px;">${APP_VERSION}</div>
       ${_syncBadgeHTML()}
+      <div style="text-align:center;padding-top:4px;border-top:1px solid #f1f5f9;margin-top:2px;">
+        <span style="color:#cbd5e1;font-size:10px;">v${APP_VERSION} · ${APP_BUILD}</span>
+      </div>
     </div>`;
 }
 
@@ -1223,7 +1231,6 @@ function buildTransactions(){
 
   // 워크스페이스 순서 맵
   const _txWsWorkspaces = _getWorkspaces();
-  _cachedWsCount = _txWsWorkspaces.length; // _buildTxRow 캐시 갱신
   const _txWsOrder = {};
   _txWsWorkspaces.forEach((w, i) => { _txWsOrder[w.id] = i; });
 
@@ -1430,16 +1437,12 @@ function buildTransactions(){
   '</div>';
 }
 
-// buildTransactions 호출 시 갱신되는 WS 캐시 (행 렌더 시 반복 호출 방지)
-let _cachedWsCount = -1;
-function _hasWorkspaces(){ return _cachedWsCount > 0; }
-
 function _buildTxRow(tx,hideDate){
   const cl=S.clients.find(c=>c.id===tx.clientId);
   const color=tx.type==='매출'?'#16a34a':'#dc2626';
   const cName=cl?.name||'?';
   const safeAttr=cName.replace(/&/g,'&amp;').replace(/"/g,'&quot;');
-  const canStat=!!(tx._napumId||_hasWorkspaces());
+  const canStat=!!(tx._napumId||_getWorkspaces().length>0);
   const clientNameHtml=canStat
     ?'<span class="stat-trigger" data-cn="'+safeAttr+'" style="cursor:pointer;border-bottom:1px dashed #d97706;color:#0f172a;" title="\uD83D\uDCCB \uB0A9\uD488 \uBA85\uC138\uD45C">'+esc(cName)+'</span>'
     :'<span style="color:#0f172a;">'+esc(cName)+'</span>';
@@ -1466,6 +1469,75 @@ function buildReceivables(){
   const totalRec = rec.reduce((s,t) => s + _txRemain(t), 0);
   const totalPay = pay.reduce((s,t) => s + _txRemain(t), 0);
   const q = S.rcvSearch || '';
+
+  // 거래처별 그룹화 + 검색 필터
+  function groupByClient(items){
+    const map = {};
+    items.forEach(t => {
+      const cl = S.clients.find(c => c.id === t.clientId);
+      if(q && !matchAny(q, cl?.name)) return; // 초성 검색 필터
+      const key = t.clientId;
+      if(!map[key]) map[key] = { clientId: key, txs: [], clName: cl?.name || '?' };
+      map[key].txs.push(t);
+    });
+    return Object.values(map).sort((a,b) => {
+      const ra = a.txs.reduce((s,t) => s + _txRemain(t), 0);
+      const rb = b.txs.reduce((s,t) => s + _txRemain(t), 0);
+      return rb - ra;
+    });
+  }
+
+  function section(title, items, color, bg, bd, isSales){
+    const groups = groupByClient(items);
+    const sectionTotal = fmtW(groups.reduce((s,g) => s + g.txs.reduce((ss,t) => ss + _txRemain(t), 0), 0));
+
+    if(groups.length === 0) return `
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;background:${bg};border-bottom:1px solid ${bd};">
+          <h3 style="color:${color};font-weight:600;font-size:14px;">${esc(title)}</h3>
+          <span style="color:${color};font-weight:700;">${sectionTotal}</span>
+        </div>
+        <div style="padding:28px 0;text-align:center;color:#94a3b8;font-size:13px;">${q ? '검색 결과 없음' : '없음'}</div>
+      </div>`;
+
+    const groupRows = groups.map(g => {
+      const cl = S.clients.find(c => c.id === g.clientId);
+      const groupRemain = g.txs.reduce((s,t) => s + _txRemain(t), 0);
+      const txCount = g.txs.length;
+      // 가장 오래된 미수금 날짜
+      const oldestDate = g.txs.map(t => t.date).sort()[0];
+      const daysOldest = Math.floor((Date.now() - new Date(oldestDate)) / 86400000);
+      const urgColor = daysOldest >= 60 ? '#dc2626' : daysOldest >= 30 ? '#b45309' : '#64748b';
+      const urgBg = daysOldest >= 60 ? '#fee2e2' : daysOldest >= 30 ? '#fef3c7' : '#f1f5f9';
+
+      return `
+        <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid #f1f5f9;gap:10px;">
+          <div style="flex:1;min-width:0;">
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+              <span style="font-weight:700;color:#0f172a;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(cl?.name||'?')}</span>
+              <span style="font-size:10px;color:#94a3b8;">${txCount}건</span>
+              <span style="font-size:10px;background:${urgBg};color:${urgColor};padding:1px 6px;border-radius:4px;font-weight:600;">${daysOldest}일 경과</span>
+            </div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
+            <span style="color:${color};font-weight:700;font-size:15px;">${fmtW(groupRemain)}</span>
+            ${isSales ? `<button onclick="openBatchPay(${g.clientId})"
+              style="padding:5px 10px;border:none;background:${color};color:#fff;border-radius:7px;font-size:11px;cursor:pointer;font-weight:600;white-space:nowrap;">
+              💰 수금
+            </button>` : ''}
+          </div>
+        </div>`;
+    }).join('');
+
+    return `
+      <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
+        <div style="display:flex;align-items:center;justify-content:space-between;padding:13px 16px;background:${bg};border-bottom:1px solid ${bd};">
+          <h3 style="color:${color};font-weight:600;font-size:14px;">${esc(title)}</h3>
+          <span style="color:${color};font-weight:700;font-size:16px;">${sectionTotal}</span>
+        </div>
+        ${groupRows}
+      </div>`;
+  }
 
   return `
     <div style="display:flex;flex-direction:column;gap:16px;">
@@ -1497,7 +1569,8 @@ function buildReceivables(){
       </div>
 
       <div id="rcvListArea">
-        ${_buildRcvSections()}
+        ${section('미수금 (받을 돈)', rec, '#b45309', '#fefce8', '#fcd34d', true)}
+        ${section('미지급금 (줄 돈)', pay, '#dc2626', '#fff1f2', '#fecdd3', false)}
       </div>
     </div>`;
 }
@@ -1542,7 +1615,7 @@ function _buildRcvSections(){
       const urgColor = daysOldest>=60?'#dc2626':daysOldest>=30?'#b45309':'#64748b';
       const urgBg = daysOldest>=60?'#fee2e2':daysOldest>=30?'#fef3c7':'#f1f5f9';
       return `
-        <div onclick="S.txSearch='';S.txTf='전체';S.txSf='전체';S.txPeriodMode='all';S.txMonth='전체';S.view='transactions';render()" class="hover-row" style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid #f1f5f9;gap:10px;cursor:pointer;">
+        <div style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid #f1f5f9;gap:10px;">
           <div style="flex:1;min-width:0;">
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
               <span style="font-weight:700;color:#0f172a;font-size:13px;">${esc(cl?.name||'?')}</span>
@@ -1550,7 +1623,7 @@ function _buildRcvSections(){
               <span style="font-size:10px;background:${urgBg};color:${urgColor};padding:1px 6px;border-radius:4px;font-weight:600;">${daysOldest}일 경과</span>
             </div>
           </div>
-          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;" onclick="event.stopPropagation()">
+          <div style="display:flex;align-items:center;gap:8px;flex-shrink:0;">
             <span style="color:${color};font-weight:700;font-size:15px;">${fmtW(groupRemain)}</span>
             ${isSales?`<button onclick="openBatchPay(${g.clientId})" style="padding:5px 10px;border:none;background:${color};color:#fff;border-radius:7px;font-size:11px;cursor:pointer;font-weight:600;white-space:nowrap;">💰 수금</button>`:''}
           </div>
@@ -1611,7 +1684,7 @@ function buildTxModal(){
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
       <div><label style="font-size:12px;color:#64748b;">거래일자<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><input id="tf_date" type="date" value="${esc(f.date)}" style="${ISX}"></div></div>
       <div><label style="font-size:12px;color:#64748b;">구분<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><select id="tf_type" onchange="onTxType(this.value)" style="${ISX}"><option ${f.type==='매출'?'selected':''}>매출</option><option ${f.type==='매입'?'selected':''}>매입</option></select></div></div>
-      <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">거래처<span style="color:#dc2626">*</span></label><div style="margin-top:4px;position:relative;"><input id="tf_clientName" list="tf_clientList" value="${esc(initClientName)}" placeholder="거래처명 입력 또는 선택…" autocomplete="off" oninput="_onTxClientInput(this.value)" onchange="_onTxClientInput(this.value)" onkeydown="if(event.key==='Enter'||event.keyCode===13){this.blur();}" style="${ISX}"><datalist id="tf_clientList">${clientOpts}</datalist><input type="hidden" id="tf_clientId" value="${isEd?f.clientId:''}"></div></div>
+      <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">거래처<span style="color:#dc2626">*</span></label><div style="margin-top:4px;position:relative;"><input id="tf_clientName" list="tf_clientList" value="${esc(initClientName)}" placeholder="거래처명 입력 또는 선택…" autocomplete="off" oninput="_onTxClientInput(this.value)" onkeydown="if(event.key==='Enter'||event.keyCode===13){this.blur();}" style="${ISX}"><datalist id="tf_clientList">${clientOpts}</datalist><input type="hidden" id="tf_clientId" value="${isEd?f.clientId:''}"></div></div>
       <div><label style="font-size:12px;color:#64748b;">공급가액<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><input id="tf_amount" value="${f.amount?fmt(f.amount):''}" oninput="onTxAmt(this.value)" placeholder="0" style="${ISX}" ${FB}></div></div>
       <div><label style="font-size:12px;color:#64748b;">세액 (자동계산)</label><div style="margin-top:4px;"><input id="tf_tax" value="${f.tax?fmt(f.tax):''}" oninput="onTxTax(this.value)" placeholder="0" style="${ISX}" ${FB}></div></div>
       <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">적요</label><div style="margin-top:4px;"><input id="tf_memo" value="${esc(f.memo||'')}" placeholder="거래 내용" style="${ISX}" ${FB}></div></div>
@@ -2174,7 +2247,8 @@ async function doSyncFromDelivery(){
         }
 
         const napumClients=Object.values(csSnap.val()||{});
-        const napumOrders =Object.values(ordSnap.val()||{});
+        // Firebase push key를 orderId로 사용 (o.id 대신 실제 DB key)
+        const napumOrders=Object.entries(ordSnap.val()||{}).map(([fbKey,o])=>({...o,_fbKey:fbKey}));
 
         // 거래처 병합
         napumClients.forEach(nc=>{
@@ -2214,7 +2288,7 @@ async function doSyncFromDelivery(){
           const napumPaid = o.isPaid;
           const napumPartial = !o.isPaid && (o.paidAmount||0) > 0;
           const status = napumPaid ? '수금완료' : '미수금';
-          const napumKey=`${ws.id}:${o.id}`;
+          const napumKey=`${ws.id}:${o._fbKey||o.id}`;
 
           if(napumIdToCrmId[napumKey]){
             // 이미 연동된 전표 → 결제 상태 전체 업데이트
@@ -3162,287 +3236,185 @@ async function confirmReset(){
   }
 }
 
-// ── AUTO BACKUP SYSTEM ────────────────────────────────────────────────────────
-const BACKUP_LS_KEY  = 'crm_auto_backups'; // localStorage 캐시
-const BACKUP_FB_PATH = 'backups';           // Firebase RTDB 경로: /backups/{id}
-const BACKUP_MAX     = 10;
+// ── 자동 백업 시스템 ──────────────────────────────────────────────────────────
+const BACKUP_KEY_PREFIX = 'crm_auto_backup_';
+const BACKUP_MAX = 6; // 최대 6개 보관 (15일/말일 × 3개월)
 
-// ── localStorage 캐시 ──────────────────────────────────────────────────────
-function _getBackups(){ return lsGet(BACKUP_LS_KEY, []); }
-function _saveBackupsLocal(arr){ lsSet(BACKUP_LS_KEY, arr); }
-
-// ── Firebase 백업 저장 ────────────────────────────────────────────────────
-async function _fbSaveBackup(entry){
-  if(!db) return;
-  try{
-    await db.ref(`${BACKUP_FB_PATH}/${entry.id}`).set(entry);
-  }catch(e){ console.warn('[백업] Firebase 저장 실패:', e.message); }
-}
-
-// ── Firebase 백업 삭제 ────────────────────────────────────────────────────
-async function _fbDeleteBackup(id){
-  if(!db) return;
-  try{
-    await db.ref(`${BACKUP_FB_PATH}/${id}`).remove();
-  }catch(e){ console.warn('[백업] Firebase 삭제 실패:', e.message); }
-}
-
-// ── Firebase → localStorage 동기화 (앱 시작 시 1회) ──────────────────────
-async function _syncBackupsFromFb(){
-  if(!db) return;
-  try{
-    const snap = await db.ref(BACKUP_FB_PATH).get();
-    if(!snap.val()) return;
-    const arr = Object.values(snap.val()).sort((a,b)=>b.id-a.id).slice(0, BACKUP_MAX);
-    _saveBackupsLocal(arr);
-    console.info(`[백업] Firebase에서 ${arr.length}개 동기화됨`);
-  }catch(e){ console.warn('[백업] Firebase 동기화 실패:', e.message); }
-}
-
-// ── Firebase에서 오래된 백업 정리 (BACKUP_MAX 초과분 삭제) ────────────────
-async function _fbPruneBackups(){
-  if(!db) return;
-  try{
-    const snap = await db.ref(BACKUP_FB_PATH).get();
-    if(!snap.val()) return;
-    const all = Object.values(snap.val()).sort((a,b)=>b.id-a.id);
-    const toDelete = all.slice(BACKUP_MAX);
-    await Promise.all(toDelete.map(b => db.ref(`${BACKUP_FB_PATH}/${b.id}`).remove()));
-  }catch(e){ console.warn('[백업] Firebase 정리 실패:', e.message); }
-}
-
-/** 백업 생성 (localStorage + Firebase 동시 저장) */
-async function _createBackup(label){
-  const backups = _getBackups();
-  const entry = {
-    id:   Date.now(),
-    date: new Date().toISOString(),
-    label: label,
-    clients:      JSON.parse(JSON.stringify(S.clients)),
-    transactions: JSON.parse(JSON.stringify(S.transactions)),
+function _makeBackupSnapshot(label){
+  return {
+    label,
+    savedAt: new Date().toISOString(),
+    version: APP_VERSION,
+    clients: S.clients,
+    transactions: S.transactions,
+    clientCount: S.clients.length,
+    txCount: S.transactions.length,
   };
-  // localStorage: 같은 label 중복 제거 후 최신 추가
-  const filtered = backups.filter(b => b.label !== label);
-  filtered.unshift(entry);
-  _saveBackupsLocal(filtered.slice(0, BACKUP_MAX));
-
-  // Firebase: 비동기 저장 + 정리 (fire-and-forget)
-  _fbSaveBackup(entry).then(()=>_fbPruneBackups()).catch(()=>{});
-
-  return entry;
 }
 
-/** 매월 15일·말일 자동 백업 체크 — loadData 완료 후 호출 */
-async function checkAutoBackup(){
-  const d    = new Date();
-  const day  = d.getDate();
-  const lastDay = new Date(d.getFullYear(), d.getMonth()+1, 0).getDate();
-  const isBackupDay = (day === 15 || day === lastDay);
-  if(!isBackupDay) return;
-
-  const label = `AUTO_${localDate()}`;
-  const existing = _getBackups().find(b => b.label === label);
-  if(existing) return; // 오늘 이미 백업됨
-
-  const entry = await _createBackup(label);
-  console.info(`[자동백업] ${label} 완료 (거래처 ${entry.clients.length}개, 거래 ${entry.transactions.length}건)`);
-  showToast(`🗄️ 자동 백업 완료 (${localDate()})`);
+function _getBackupList(){
+  const keys = [];
+  for(let i=0; i<localStorage.length; i++){
+    const k = localStorage.key(i);
+    if(k && k.startsWith(BACKUP_KEY_PREFIX)) keys.push(k);
+  }
+  return keys.sort().reverse(); // 최신순
 }
 
-/** 백업 모달 열기 — Firebase 최신 목록 로드 후 표시 */
-async function openBackupModal(){
-  M.backupModal = { tab: 'list', loading: true };
-  renderModals();
+function _autoBackup(force=false){
+  const today = localDate(); // 'YYYY-MM-DD'
+  const day = parseInt(today.slice(8,10));
+  const lastDayOfMonth = new Date(new Date().getFullYear(), new Date().getMonth()+1, 0).getDate();
+  const isBackupDay = day === 15 || day === lastDayOfMonth;
+  if(!isBackupDay && !force) return;
+
+  const label = day === 15
+    ? `${today.slice(0,7)} 중순 자동백업`
+    : day === lastDayOfMonth
+    ? `${today.slice(0,7)} 말일 자동백업`
+    : `${today} 수동백업`;
+
+  // 오늘 이미 백업했으면 skip (force면 덮어씀)
+  const todayKey = BACKUP_KEY_PREFIX + today;
+  if(!force && localStorage.getItem(todayKey)) return;
+
+  // 백업 저장
+  lsSet(todayKey, _makeBackupSnapshot(label));
+
+  // 오래된 백업 정리 (MAX 초과분 삭제)
+  const allKeys = _getBackupList();
+  if(allKeys.length > BACKUP_MAX){
+    allKeys.slice(BACKUP_MAX).forEach(k => localStorage.removeItem(k));
+  }
+
+  console.info('[자동백업]', label);
+}
+
+function manualBackup(){
+  const today = localDate();
+  const key = BACKUP_KEY_PREFIX + today + '_manual';
+  lsSet(key, _makeBackupSnapshot(`${today} 수동백업`));
+  // 오래된 것 정리
+  const allKeys = _getBackupList();
+  if(allKeys.length > BACKUP_MAX){
+    allKeys.slice(BACKUP_MAX).forEach(k => localStorage.removeItem(k));
+  }
+  showToast('✅ 수동 백업 완료');
+}
+
+function openBackupModal(){
+  M.backupModal = { step: 'list', selectedKey: null };
   _pushModalHistory();
-  // Firebase 최신 목록 동기화
-  await _syncBackupsFromFb();
-  M.backupModal = { tab: 'list', loading: false };
   renderModals();
 }
-function closeBackupModal(){
-  M.backupModal = null;
-  renderModals();
-}
+function closeBackupModal(){ M.backupModal = null; renderModals(); }
 
-/** 백업 목록에서 복구 */
-async function restoreBackup(id){
-  const backups = _getBackups();
-  let entry = backups.find(b => b.id === id);
-
-  if(!entry && db){
-    try{
-      const snap = await db.ref(`${BACKUP_FB_PATH}/${id}`).get();
-      entry = snap.val();
-    }catch(e){}
+function restoreBackup(key){
+  const snap = lsGet(key, null);
+  if(!snap || !Array.isArray(snap.clients) || !Array.isArray(snap.transactions)){
+    showToast('백업 데이터가 손상되었습니다.');
+    return;
   }
-  if(!entry){ showToast('백업을 찾을 수 없습니다.'); return; }
-
-  const dateStr = new Date(entry.date).toLocaleString('ko-KR');
-  M.confirm={
-    msg:`[${entry.label}]\n${dateStr}\n거래처 ${entry.clients.length}개 / 거래 ${entry.transactions.length}건\n\n이 백업으로 복구할까요?\n현재 데이터는 덮어씌워집니다.`,
-    okStr:`_doRestoreBackup(${id})`
-  };
+  M.backupModal = { step: 'confirm', selectedKey: key, snap };
   renderModals();
 }
 
-async function _doRestoreBackup(id){
-  M.confirm=null;
-  const backups = _getBackups();
-  let entry = backups.find(b => b.id === id);
-  if(!entry && db){
-    try{
-      const snap = await db.ref(`${BACKUP_FB_PATH}/${id}`).get();
-      entry = snap.val();
-    }catch(e){}
-  }
-  if(!entry){ showToast('백업을 찾을 수 없습니다.'); return; }
-
-  // 복구 전 현재 데이터를 임시 백업
-  await _createBackup(`BEFORE_RESTORE_${localDate()}`);
-
-  S.clients      = JSON.parse(JSON.stringify(entry.clients));
-  S.transactions = JSON.parse(JSON.stringify(entry.transactions));
-  lsSet('crm_clients', S.clients);
-  lsSet('crm_tx', S.transactions);
-
+async function confirmRestoreBackup(){
+  const snap = M.backupModal?.snap;
+  if(!snap) return;
   try{
-    if(db){
-      await saveC(); await saveTX();
-      showToast('✅ 복구 완료 (클라우드 동기화됨)');
-    } else {
-      showToast('✅ 복구 완료 (로컬 저장)');
-    }
-  }catch(e){ showToast('✅ 복구 완료 (클라우드 오류)'); }
-
-  closeBackupModal();
-  render();
+    S.clients     = snap.clients;
+    S.transactions= snap.transactions;
+    lsSet('crm_clients', S.clients);
+    lsSet('crm_tx', S.transactions);
+    closeBackupModal();
+    render();
+    showToast('✅ 백업 복원 완료');
+    try{ await saveC(); }catch(e){}
+    try{ await saveTX(); }catch(e){}
+  }catch(e){
+    showToast('⚠️ 복원 중 오류 발생');
+    closeBackupModal();
+  }
 }
 
-/** 백업 삭제 (localStorage + Firebase) */
-async function deleteBackup(id){
-  M.confirm={
-    msg:'이 백업을 삭제할까요?',
-    okStr:`_doDeleteBackup(${id})`
-  };
-  renderModals();
-}
-async function _doDeleteBackup(id){
-  M.confirm=null;
-  _saveBackupsLocal(_getBackups().filter(b => b.id !== id));
-  _fbDeleteBackup(id);
-  M.backupModal = { tab: 'list', loading: false };
-  renderModals();
-  showToast('백업이 삭제됐습니다.');
+function deleteBackup(key){
+  localStorage.removeItem(key);
+  renderModals(); // 목록 새로고침
 }
 
-/** 수동 백업 생성 */
-async function createManualBackup(){
-  const label = `MANUAL_${localDate()}_${Date.now().toString().slice(-4)}`;
-  M.backupModal = { tab: 'list', loading: true };
-  renderModals();
-  await _createBackup(label);
-  M.backupModal = { tab: 'list', loading: false };
-  renderModals();
-  showToast('💾 수동 백업이 생성됐습니다.');
-}
-
-/** 백업 → JSON 파일로 다운로드 */
-function downloadBackup(id){
-  const entry = _getBackups().find(b => b.id === id);
-  if(!entry) return;
-  const data  = { exportedAt: entry.date, version: 1, label: entry.label, clients: entry.clients, transactions: entry.transactions };
-  const blob  = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const url   = URL.createObjectURL(blob);
-  const a     = document.createElement('a');
-  a.href = url; a.download = `crm-backup-${entry.label}.json`; a.style.display = 'none';
-  document.body.appendChild(a); a.click();
-  setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); }, 300);
-}
-
-/** 백업 모달 HTML 빌드 */
 function buildBackupModal(){
   if(!M.backupModal) return '';
+  const mo = M.backupModal;
+  const allKeys = _getBackupList();
 
-  // 로딩 중 표시
-  if(M.backupModal.loading){
-    return `
-    <div onclick="closeBackupModal()" style="position:fixed;inset:0;background:rgba(15,23,42,.45);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);z-index:1100;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;">
-      <div onclick="event.stopPropagation()" style="background:#fff;border-radius:16px;width:100%;max-width:460px;padding:48px 20px;display:flex;flex-direction:column;align-items:center;gap:12px;box-shadow:0 20px 60px rgba(0,0,0,.25);">
-        <div style="font-size:28px;">🗄️</div>
-        <div style="font-size:13px;color:#64748b;">Firebase에서 백업 목록을 불러오는 중...</div>
+  if(mo.step === 'confirm'){
+    const snap = mo.snap;
+    const dt = new Date(snap.savedAt).toLocaleString('ko-KR');
+    return `<div style="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2000;display:flex;align-items:flex-end;justify-content:center;">
+      <div style="background:#fff;border-radius:16px 16px 0 0;width:100%;max-width:520px;padding:20px;max-height:60vh;overflow-y:auto;">
+        <div style="font-size:16px;font-weight:700;color:#0f172a;margin-bottom:8px;">⚠️ 백업 복원 확인</div>
+        <div style="background:#fefce8;border:1px solid #fef08a;border-radius:10px;padding:14px;margin-bottom:16px;">
+          <div style="font-size:13px;font-weight:700;color:#b45309;margin-bottom:6px;">${esc(snap.label)}</div>
+          <div style="font-size:12px;color:#64748b;">저장 시각: ${esc(dt)}</div>
+          <div style="font-size:12px;color:#64748b;">거래처 ${snap.clientCount}개 · 거래 ${snap.txCount}건</div>
+        </div>
+        <div style="background:#fff1f2;border:1px solid #fecdd3;border-radius:8px;padding:10px;font-size:12px;color:#dc2626;margin-bottom:16px;">
+          현재 데이터가 이 백업으로 <b>완전히 교체</b>됩니다.<br>복원 전 현재 데이터를 수동 백업해두세요.
+        </div>
+        <div style="display:flex;gap:10px;">
+          <button onclick="M.backupModal.step='list';renderModals()" style="flex:1;padding:11px;border:1px solid #e2e8f0;background:#f8fafc;border-radius:10px;font-size:13px;cursor:pointer;color:#64748b;">← 취소</button>
+          <button onclick="confirmRestoreBackup()" style="flex:2;padding:11px;border:none;background:#dc2626;color:#fff;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;">🔄 복원 실행</button>
+        </div>
       </div>
     </div>`;
   }
 
-  const backups = _getBackups();
-  const typeIcon = lbl => lbl.startsWith('AUTO') ? '🗄️' : lbl.startsWith('BEFORE_RESTORE') ? '🔄' : '💾';
-  const typeLabel = lbl => {
-    if(lbl.startsWith('AUTO')) return '자동';
-    if(lbl.startsWith('BEFORE_RESTORE')) return '복구전';
-    return '수동';
-  };
-  const typeBadgeColor = lbl => {
-    if(lbl.startsWith('AUTO')) return { bg:'#eff6ff', tx:'#1d4ed8', bd:'#bfdbfe' };
-    if(lbl.startsWith('BEFORE_RESTORE')) return { bg:'#fef3c7', tx:'#b45309', bd:'#fcd34d' };
-    return { bg:'#f0fdf4', tx:'#16a34a', bd:'#bbf7d0' };
-  };
-
-  const rows = backups.length === 0
-    ? `<div style="text-align:center;padding:40px 0;color:#94a3b8;font-size:13px;">저장된 백업이 없습니다.<br>수동 백업을 생성하거나 15일·말일을 기다려주세요.</div>`
-    : backups.map(b => {
-        const c   = typeBadgeColor(b.label);
-        const dt  = new Date(b.date).toLocaleString('ko-KR', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
-        return `<div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;display:flex;align-items:center;gap:10px;margin-bottom:8px;">
-          <div style="font-size:20px;flex-shrink:0;">${typeIcon(b.label)}</div>
-          <div style="flex:1;min-width:0;">
-            <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">
-              <span style="font-size:11px;padding:1px 7px;border-radius:9999px;background:${c.bg};color:${c.tx};border:1px solid ${c.bd};font-weight:600;">${typeLabel(b.label)}</span>
-              <span style="font-size:12px;color:#475569;font-weight:500;">${dt}</span>
+  // step: list
+  const rows = allKeys.length === 0
+    ? '<div style="padding:24px 0;text-align:center;color:#94a3b8;font-size:13px;">저장된 백업이 없습니다.</div>'
+    : allKeys.map(key => {
+        const snap = lsGet(key, null);
+        if(!snap) return '';
+        const dt = new Date(snap.savedAt).toLocaleString('ko-KR');
+        const isManual = key.includes('_manual');
+        return `
+          <div style="display:flex;align-items:center;gap:10px;padding:12px 0;border-bottom:1px solid #f1f5f9;">
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:13px;font-weight:600;color:#0f172a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+                ${isManual?'✏️ ':'📅 '}${esc(snap.label||key)}
+              </div>
+              <div style="font-size:11px;color:#94a3b8;margin-top:2px;">${esc(dt)} · 거래처 ${snap.clientCount||'?'}개 · 거래 ${snap.txCount||'?'}건</div>
             </div>
-            <div style="font-size:11px;color:#94a3b8;">거래처 ${b.clients.length}개 · 거래 ${b.transactions.length}건</div>
-          </div>
-          <div style="display:flex;gap:5px;flex-shrink:0;">
-            <button onclick="downloadBackup(${b.id})" title="다운로드" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:5px 8px;cursor:pointer;font-size:11px;color:#475569;" onmouseenter="this.style.background='#f0fdf4';this.style.color='#16a34a'" onmouseleave="this.style.background='#f8fafc';this.style.color='#475569'">⬇</button>
-            <button onclick="restoreBackup(${b.id})" title="복구" style="background:#fef3c7;border:1px solid #fcd34d;border-radius:6px;padding:5px 8px;cursor:pointer;font-size:11px;color:#b45309;font-weight:600;" onmouseenter="this.style.background='#fde68a'" onmouseleave="this.style.background='#fef3c7'">복구</button>
-            <button onclick="deleteBackup(${b.id})" title="삭제" style="background:#fff1f2;border:1px solid #fecdd3;border-radius:6px;padding:5px 8px;cursor:pointer;font-size:11px;color:#dc2626;" onmouseenter="this.style.background='#fee2e2'" onmouseleave="this.style.background='#fff1f2'">✕</button>
-          </div>
-        </div>`;
+            <div style="display:flex;gap:6px;flex-shrink:0;">
+              <button onclick="restoreBackup('${esc(key)}')" style="padding:5px 10px;background:#f0fdf4;border:1px solid #86efac;color:#16a34a;border-radius:7px;font-size:11px;font-weight:600;cursor:pointer;">복원</button>
+              <button onclick="deleteBackup('${esc(key)}')" style="padding:5px 8px;background:#fff1f2;border:1px solid #fecdd3;color:#dc2626;border-radius:7px;font-size:11px;cursor:pointer;">삭제</button>
+            </div>
+          </div>`;
       }).join('');
 
-  const nextBackup = (()=>{
-    const d = new Date();
-    const last = new Date(d.getFullYear(), d.getMonth()+1, 0).getDate();
-    const day  = d.getDate();
-    if(day < 15) return `이달 15일`;
-    if(day < last) return `이달 말일(${last}일)`;
-    return `다음달 15일`;
-  })();
-
-  return `
-    <div onclick="closeBackupModal()" style="position:fixed;inset:0;background:rgba(15,23,42,.45);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);z-index:1100;display:flex;align-items:center;justify-content:center;padding:20px;box-sizing:border-box;">
-      <div onclick="event.stopPropagation()" style="background:#fff;border-radius:16px;width:100%;max-width:460px;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.25);overflow:hidden;">
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid #e2e8f0;flex-shrink:0;">
-          <div>
-            <div style="font-weight:700;font-size:15px;color:#0f172a;">🗄️ 자동 백업 관리</div>
-            <div style="font-size:11px;color:#94a3b8;margin-top:2px;">다음 자동 백업: ${nextBackup} · 최대 ${BACKUP_MAX}개 보관</div>
-            <div style="font-size:10px;margin-top:3px;color:${db?'#16a34a':'#f59e0b'};">${db?'☁️ Firebase 저장됨':'📴 로컬 저장 (오프라인)'}</div>
-          </div>
-          <button onclick="closeBackupModal()" style="background:none;border:none;cursor:pointer;color:#94a3b8;padding:4px;">${I.x}</button>
+  return `<div style="position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:2000;display:flex;align-items:flex-end;justify-content:center;">
+    <div style="background:#fff;border-radius:16px 16px 0 0;width:100%;max-width:520px;max-height:75vh;display:flex;flex-direction:column;">
+      <div style="padding:16px 18px;border-bottom:1px solid #e2e8f0;display:flex;align-items:center;justify-content:space-between;flex-shrink:0;">
+        <div>
+          <div style="font-size:16px;font-weight:700;color:#0f172a;">💾 자동 백업 복원</div>
+          <div style="font-size:11px;color:#94a3b8;margin-top:2px;">최근 ${BACKUP_MAX}개 보관 · 매월 15일·말일 자동저장</div>
         </div>
-        <div style="padding:12px 16px;border-bottom:1px solid #e2e8f0;flex-shrink:0;">
-          <button onclick="createManualBackup()" style="width:100%;padding:10px;border-radius:8px;border:1.5px dashed #d97706;background:#fffbeb;color:#b45309;font-size:13px;font-weight:600;cursor:pointer;" onmouseenter="this.style.background='#fef3c7'" onmouseleave="this.style.background='#fffbeb'">
-            💾 지금 수동 백업 만들기
-          </button>
-        </div>
-        <div style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 16px;">
-          ${rows}
-        </div>
+        <button onclick="closeBackupModal()" style="background:none;border:none;cursor:pointer;color:#94a3b8;font-size:18px;">✕</button>
       </div>
-    </div>`;
+      <div style="flex:1;overflow-y:auto;padding:0 18px;">
+        ${rows}
+      </div>
+      <div style="padding:14px 18px;border-top:1px solid #e2e8f0;display:flex;gap:8px;flex-shrink:0;">
+        <button onclick="manualBackup();renderModals()" style="flex:1;padding:10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;font-size:12px;font-weight:600;cursor:pointer;color:#475569;">✏️ 지금 백업</button>
+        <button onclick="closeBackupModal()" style="flex:1;padding:10px;background:#0f172a;border:none;border-radius:10px;font-size:12px;font-weight:600;cursor:pointer;color:#fff;">닫기</button>
+      </div>
+    </div>
+  </div>`;
 }
 
 function exportData(){
-  const data={exportedAt:new Date().toISOString(),version:1,clients:S.clients,transactions:S.transactions};
+  const data={exportedAt:new Date().toISOString(),version:APP_VERSION,clients:S.clients,transactions:S.transactions};
   const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
   const url=URL.createObjectURL(blob);
   const a=document.createElement('a');
@@ -3678,7 +3650,7 @@ function onTxType(type){
 
   function onStart(e){
     // 모달/드로어 열린 경우 무시
-    if(M.clientModal||M.txModal||M.confirm||M.scanModal||M.syncModal||M.qpModal||M.batchPayModal||M.statModal||M.resetModal||M.backupModal||S.drawerOpen)return;
+    if(M.clientModal||M.txModal||M.confirm||M.scanModal||S.drawerOpen)return;
     const t=e.touches?e.touches[0]:e;
     tx0=t.clientX; ty0=t.clientY; startTime=Date.now(); swiping=true;
   }
@@ -3759,7 +3731,7 @@ window.onerror=function(msg,src,line){
     </div>`;
   return false;
 };
-(async()=>{ await loadData(); _initHistory(); setTimeout(updateSyncBadge,1000); })();
+(async()=>{ await loadData(); _initHistory(); _autoBackup(); setTimeout(updateSyncBadge,1000); })();
 
 // 이벤트 위임: .stat-trigger 클릭 → 납품 명세표 팝업
 document.addEventListener('click', e=>{
@@ -3779,9 +3751,9 @@ function _hasOpenModal(){
 
 function _closeTopModal(){
   if(M.resetModal)    { closeResetModal(); return; }
+  if(M.backupModal)   { closeBackupModal(); return; }
   if(M.confirm)       { M.confirm=null; renderModals(); return; }
   if(M.scanModal)     { closeScanModal(); return; }
-  if(M.backupModal)   { closeBackupModal(); return; }
   if(M.qpModal)       { closeQuickPay(); return; }
   if(M.batchPayModal) { closeBatchPay(); return; }
   if(M.txModal)       { closeTxModal(); return; }
