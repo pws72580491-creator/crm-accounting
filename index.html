@@ -1240,7 +1240,7 @@ function buildClients(){
           <span style="color:#94a3b8;font-size:11px;text-align:right;">미수금</span>
           <span style="width:52px;color:#94a3b8;font-size:11px;text-align:center;">관리</span>
         </div>
-        ${filtered.length === 0 ? '<div style="padding:40px 0;text-align:center;color:#94a3b8;font-size:13px;">거래처가 없습니다.</div>' : rows}
+        <div id="cListRows">${filtered.length === 0 ? '<div style="padding:40px 0;text-align:center;color:#94a3b8;font-size:13px;">거래처가 없습니다.</div>' : rows}</div>
       </div>
     </div>`;
 }
@@ -1462,7 +1462,7 @@ function buildTransactions(){
         '<span class="col-status" style="color:#94a3b8;font-size:11px;text-align:center;">상태</span>'+
         '<span class="col-actions" style="color:#94a3b8;font-size:11px;">관리</span>'+
       '</div>'+
-      (filtered.length===0?'<div style="padding:40px 0;text-align:center;color:#94a3b8;font-size:13px;">거래 내역이 없습니다.</div>':rows)+
+      (filtered.length===0?'<div id="txListRows" style="padding:40px 0;text-align:center;color:#94a3b8;font-size:13px;">거래 내역이 없습니다.</div>':'<div id="txListRows">'+rows+'</div>')+
     '</div>'+
     '<p style="color:#cbd5e1;font-size:11px;text-align:center;">미수금·미지급금 배지를 클릭하면 결제 처리 모달이 열립니다.</p>'+
   '</div>';
@@ -3613,7 +3613,69 @@ function renderModals(){
 
 // ── HANDLERS ──────────────────────────────────────────────────────────────────
 function setView(v){S.view=v;render();}
-function setCSearch(v){S.cSearch=v;renderContent();}
+
+// ── 검색 부분 갱신 (input DOM 유지 → IME 끊김 없음) ─────────────────────────
+function _buildCRows(){
+  const workspaces=_getWorkspaces();
+  function clientWsId(cid){
+    for(const w of workspaces){
+      const tx=S.transactions.find(t=>t.clientId===cid&&t._napumId&&t._napumId.startsWith(w.id+':'));
+      if(tx) return w.id;
+    }
+    return null;
+  }
+  const filtered=S.clients.filter(c=>{
+    const wsId=clientWsId(c.id);
+    const wsOk=S.cWsFilter==='전체'||(S.cWsFilter==='__direct__'&&wsId===null)||wsId===S.cWsFilter;
+    return wsOk&&(S.cFilter==='전체'||c.type===S.cFilter)&&matchAny(S.cSearch,c.name,c.bizNo,c.rep,c.phone,c.memo);
+  });
+  if(filtered.length===0) return '<div style="padding:40px 0;text-align:center;color:#94a3b8;font-size:13px;">거래처가 없습니다.</div>';
+  return filtered.map(c=>{
+    const txs=S.transactions.filter(t=>t.clientId===c.id);
+    const unpaid=txs.filter(t=>t.status==='미수금').reduce((s,t)=>s+_txRemain(t),0);
+    const unpaidPay=txs.filter(t=>t.status==='미지급금').reduce((s,t)=>s+_txRemain(t),0);
+    const tc=c.type==='매출처'?'#16a34a':c.type==='매입처'?'#dc2626':'#7c3aed';
+    const unpaidBadge=unpaid>0?`<div style="font-size:11px;color:#b45309;font-weight:700;">${fmtW(unpaid)}</div>`:(unpaidPay>0?`<div style="font-size:11px;color:#dc2626;font-weight:700;">-${fmtW(unpaidPay)}</div>`:'');
+    const lastMemo=(()=>{const ms=txs.filter(t=>t.memo).sort((a,b)=>b.date.localeCompare(a.date));return ms.length?ms[0].memo:'';})();
+    return `<div class="hover-row" style="display:flex;align-items:center;padding:11px 14px;border-bottom:1px solid #f1f5f9;gap:8px;cursor:pointer;" onclick="toggleExpand(${c.id})">
+      <div style="flex:1;min-width:0;">
+        <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+          <span style="font-weight:700;color:#0f172a;font-size:13px;" class="stat-trigger" data-cn="${esc(c.name)}">${esc(c.name)}</span>
+          ${lastMemo?`<span style="font-size:10px;color:#94a3b8;background:#f8fafc;border:1px solid #e2e8f0;border-radius:4px;padding:1px 5px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(lastMemo)}</span>`:''}
+        </div>
+        <div style="color:#94a3b8;font-size:11px;margin-top:1px;"><span style="font-size:10px;font-weight:600;color:${tc};">${esc(c.type)}</span></div>
+      </div>
+      <div style="text-align:right;flex-shrink:0;">${unpaidBadge}</div>
+      <div style="width:52px;display:flex;justify-content:center;gap:8px;flex-shrink:0;" onclick="event.stopPropagation()">
+        <button onclick="editClient(${c.id})" style="color:#94a3b8;background:none;border:none;cursor:pointer;" onmouseenter="this.style.color='#d97706'" onmouseleave="this.style.color='#94a3b8'">${I.edit}</button>
+        <button onclick="confirmDelClient(${c.id})" style="color:#94a3b8;background:none;border:none;cursor:pointer;" onmouseenter="this.style.color='#dc2626'" onmouseleave="this.style.color='#94a3b8'">${I.trash}</button>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function _buildTxRowsOnly(){
+  const mode=S.txPeriodMode||'monthly';
+  const dateOk=t=>{
+    if(mode==='all') return true;
+    if(mode==='monthly') return S.txMonth==='전체'||t.date.startsWith(S.txMonth);
+    if(mode==='daily') return t.date===S.txDate;
+    if(mode==='weekly') return _inWeek(t.date,S.txWeek);
+    return true;
+  };
+  const filtered=[...S.transactions].filter(t=>{
+    const cl=S.clients.find(c=>c.id===t.clientId);
+    return dateOk(t)&&(S.txTf==='전체'||t.type===S.txTf)&&(S.txSf==='전체'||t.status===S.txSf)&&matchAny(S.txSearch,cl?.name,t.memo);
+  }).sort((a,b)=>b.date.localeCompare(a.date)||a.id-b.id);
+  if(filtered.length===0) return '<div style="padding:40px 0;text-align:center;color:#94a3b8;font-size:13px;">거래 내역이 없습니다.</div>';
+  return filtered.map(tx=>_buildTxRow(tx,false)).join('');
+}
+
+function setCSearch(v){
+  S.cSearch=v;
+  const el=document.getElementById('cListRows');
+  if(el){el.innerHTML=_buildCRows();}else{renderContent();}
+}
 function setCFilter(v){S.cFilter=v;render();}
 function setCWsFilter(v){S.cWsFilter=v;render();}
 function setRcvSearch(v){
@@ -3628,7 +3690,11 @@ function setRcvSearch(v){
   }
 }
 function toggleExpand(id){S.cExpanded=S.cExpanded===id?null:id;render();}
-function setTxSearch(v){S.txSearch=v;renderContent();}
+function setTxSearch(v){
+  S.txSearch=v;
+  const el=document.getElementById('txListRows');
+  if(el){el.innerHTML=_buildTxRowsOnly();}else{renderContent();}
+}
 function setTxTf(v){S.txTf=v;render();}
 function setTxWsFilter(v){S.txWsFilter=v;render();}
 function setTxSf(v){S.txSf=v;render();}
