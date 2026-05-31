@@ -8,17 +8,6 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-title" content="거래처관리">
-<meta name="description" content="거래처 및 거래 내역을 관리하는 PWA 앱">
-<meta name="theme-color" content="#d97706">
-<!-- PWA Manifest -->
-<link rel="manifest" href="manifest.json">
-<!-- iOS 홈 화면 아이콘 -->
-<link rel="apple-touch-icon" sizes="152x152" href="icons/icon-152.png">
-<link rel="apple-touch-icon" sizes="192x192" href="icons/icon-192.png">
-<!-- 파비콘 -->
-<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
-<link rel="icon" type="image/png" sizes="96x96"  href="icons/icon-96.png">
 <title>거래처·회계 관리 시스템</title>
 <!-- Firebase SDK는 JS에서 동적 로딩 (로드 실패해도 앱 동작) -->
 <style>
@@ -512,14 +501,9 @@ async function attachNapumListeners(){
     const clientsRef = wsRef.child('clients');
     clientsRef.on('value', clientsCb, e => console.warn('납품 clients 리스너:', e));
 
-    // debounce: 300ms 내 연속 발화 시 마지막 1회만 처리 (Firebase 쓰기 폭풍 방지)
-    let _ordersDebTimer = null;
     const ordersCb = snap => {
       const orders = snap.val() || {};
-      clearTimeout(_ordersDebTimer);
-      _ordersDebTimer = setTimeout(()=>{
-        _processNapumOrdersSnapshot(ws, orders, _napumClientsCache);
-      }, 300);
+      _processNapumOrdersSnapshot(ws, orders, _napumClientsCache);
     };
     const ordersRef = wsRef.child('orders');
     ordersRef.on('value', ordersCb, e => console.warn('납품 orders 리스너:', e));
@@ -848,7 +832,7 @@ function buildDashboard(){
   const months6=[];
   for(let i=5;i>=0;i--){
     const d=new Date();d.setDate(1);d.setMonth(d.getMonth()-i);
-    const ym=localDate(d).slice(0,7);
+    const ym=d.toISOString().slice(0,7);
     const mT=S.transactions.filter(t=>t.date.startsWith(ym));
     months6.push({
       ym, label:d.toLocaleDateString('ko-KR',{month:'short'}),
@@ -1056,17 +1040,12 @@ function buildClients(){
   // 워크스페이스 목록 (거래처 그룹 정렬용)
   const workspaces = _getWorkspaces(); // [{id, label}, ...]
 
-  // 거래처에 연결된 워크스페이스 ID 캐시 (매 렌더마다 전체 거래 반복 순회 방지)
-  const _clientWsIdCache = {};
-  S.transactions.forEach(t => {
-    if(t._napumId && !_clientWsIdCache[t.clientId]){
-      const sep = t._napumId.lastIndexOf(':');
-      _clientWsIdCache[t.clientId] = sep > -1 ? t._napumId.slice(0, sep) : null;
-    }
-  });
-
+  // 거래처에 연결된 워크스페이스 ID 추출 (첫 번째 납품 거래의 _napumId wsId)
   function clientWsId(clientId){
-    return _clientWsIdCache[clientId] ?? null;
+    const tx = S.transactions.find(t => t.clientId === clientId && t._napumId);
+    if(!tx) return null;
+    const sep = tx._napumId.lastIndexOf(':');
+    return sep > -1 ? tx._napumId.slice(0, sep) : null;
   }
 
   // 워크스페이스 순서 맵 (wsId → 인덱스)
@@ -1357,7 +1336,7 @@ function buildTransactions(){
     mode==='monthly' ? fmtMonth(S.txMonth) :
     '전체 기간';
 
-  // ── WS 필터 버튼 (동기화된 워크스페이스가 1개 이상일 때 표시)
+  // ── WS 필터 버튼 (동기화된 워크스페이스가 2개 이상일 때만 표시)
   const _wsList = _txWsWorkspaces; // 이미 buildTransactions 상단에서 선언됨
   const wsBtns = _wsList.length >= 1
     ? ['전체', ..._wsList.map(w=>w.id)].map(wsId=>{
@@ -2389,7 +2368,7 @@ function buildQuickPayModal(){
     .reduce((s,x)=>s+_txRemain(x),0);
 
   const carryBtn=carryOver>0
-    ?`<button onclick="M.qpModal.amount=${carryOver};document.getElementById('qp_amt').value=${carryOver};_updatePayPreview('qp');renderModals()"
+    ?`<button onclick="M.qpModal.amount=${carryOver};document.getElementById('qp_amt').value=${carryOver};_updatePayPreview('');renderModals()"
       style="padding:5px 9px;border-radius:7px;border:1px solid #fcd34d;background:#fefce8;color:#b45309;font-size:11px;font-weight:600;cursor:pointer;">⏩ 이월액 ${esc(fmtW(carryOver))}</button>`
     :'';
 
@@ -2397,7 +2376,7 @@ function buildQuickPayModal(){
     {label:'전액',val:remain},
     ...(remain>=200000?[{label:'절반',val:Math.round(remain/2/1000)*1000}]:[]),
     ...[500000,300000,200000,100000].filter(v=>v<remain&&v>0).slice(0,2).map(v=>({label:fmtW(v),val:v})),
-  ].slice(0,4).map(b=>`<button onclick="M.qpModal.amount=${b.val};document.getElementById('qp_amt').value=${b.val};_updatePayPreview('qp');renderModals()"
+  ].slice(0,4).map(b=>`<button onclick="M.qpModal.amount=${b.val};document.getElementById('qp_amt').value=${b.val};_updatePayPreview('');renderModals()"
     style="padding:5px 9px;border-radius:7px;border:1px solid #e2e8f0;background:#f8fafc;color:#475569;font-size:11px;cursor:pointer;">${esc(b.label)}</button>`).join('');
 
   return `
@@ -2431,7 +2410,7 @@ function buildQuickPayModal(){
             <div style="font-size:12px;color:#64748b;margin-bottom:6px;">${label}액</div>
             <input id="qp_amt" type="number" value="${mo.amount||''}" placeholder="${remain}"
               style="${ISX}font-size:16px;font-weight:600;" ${FB}
-              oninput="M.qpModal.amount=Number(this.value)||0;_updatePayPreview('qp')">
+              oninput="M.qpModal.amount=Number(this.value)||0;_updatePayPreview('')">
             <div style="display:flex;gap:5px;margin-top:6px;flex-wrap:wrap;">${carryBtn}${quickBtns}</div>
           </div>
 
@@ -2496,8 +2475,7 @@ async function _patchNapumOrder(napumKey, patchObj){
 
 function _buildNapumPatch(crmTx){
   const paidAmount = crmTx.paidAmount || 0;
-  // 수금완료(매출) 또는 지급완료(매입) 모두 완납으로 처리
-  const isFull = crmTx.status === '수금완료' || crmTx.status === '지급완료';
+  const isFull = crmTx.status === '수금완료';
   const patch = {
     isPaid: isFull,
     paidAmount: paidAmount,
@@ -2601,7 +2579,7 @@ function buildBatchPayModal(){
   const quickBtns=[
     {label:`전액 ${fmtW(totalRemain)}`,val:totalRemain},
     ...(totalRemain>=200000?[{label:'절반',val:Math.round(totalRemain/2/1000)*1000}]:[]),
-    ...[1000000,500000,300000,200000,100000].filter(v=>v>0&&v<totalRemain).slice(0,2).map(v=>({label:fmtW(v),val:v})),
+    ...[1000000,500000,300000,200000,100000].filter(v=>v<totalRemain).slice(0,2).map(v=>({label:fmtW(v),val:v})),
   ].slice(0,4).map(b=>`<button onclick="M.batchPayModal.amount=${b.val};document.getElementById('bp_amt').value=${b.val};_renderBatchPreview()"
     style="padding:5px 9px;border-radius:7px;border:1px solid #e2e8f0;background:#f8fafc;color:#475569;font-size:11px;cursor:pointer;white-space:nowrap;">${esc(b.label)}</button>`).join('');
 
@@ -2723,7 +2701,7 @@ async function _loadStatOrders(){
     return (cl?.name||'')===sm.clientName && t._napumId;
   });
   clientTxs.forEach(t=>{
-    const sep=t._napumId.lastIndexOf(':');
+    const sep=t._napumId.indexOf(':');
     if(sep>0){
       const wsId=t._napumId.slice(0,sep);
       if(!wsFromTx.has(wsId)){
@@ -2759,15 +2737,11 @@ async function _loadStatOrders(){
     }));
 
     allOrders.sort((a,b)=>a.date.localeCompare(b.date));
-    if(M.statModal){
-      M.statModal={...M.statModal,step:'done',orders:allOrders,error:null};
-      renderModals();
-    }
+    if(M.statModal) M.statModal={...M.statModal,step:'done',orders:allOrders,error:null};
+    renderModals();
   }catch(err){
-    if(M.statModal){
-      M.statModal={...M.statModal,step:'error',error:err.message};
-      renderModals();
-    }
+    if(M.statModal) M.statModal={...M.statModal,step:'error',error:err.message};
+    renderModals();
   }
 }
 
@@ -2893,10 +2867,8 @@ function buildStatModal(){
           </tfoot>`:''}
         </table>
       </div>
-      ${orders.length===0?`<div style="text-align:center;color:#94a3b8;font-size:12px;margin-top:12px;">연동된 납품 내역이 없습니다.<br>납품 관리 동기화 후 다시 확인하세요.</div>`:''}
-      <div style="margin-top:10px;padding:8px 10px;background:#f8fafc;border-radius:8px;border:1px solid #e2e8f0;">
-        <span style="font-size:10px;color:#94a3b8;">※ 이 명세표는 본인 거래만 표시합니다. 타인거래([타인])는 제외됩니다.</span>
-      </div>`;  }
+      ${orders.length===0?`<div style="text-align:center;color:#94a3b8;font-size:12px;margin-top:12px;">연동된 납품 내역이 없습니다.<br>납품 관리 동기화 후 다시 확인하세요.</div>`:''}`;
+  }
 
   return `
     <div onclick="closeStatModal()" style="position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:50;display:flex;align-items:flex-end;justify-content:center;padding-bottom:env(safe-area-inset-bottom);">
@@ -3142,7 +3114,6 @@ async function confirmReset(){
     }else if(scope==='localonly'){
       S.transactions=S.transactions.filter(t=>t._napumId);
       lsSet('crm_tx',S.transactions);
-      // crm_napum_synced 는 납품 거래가 남아있으므로 초기화하지 않음 (의도적 유지)
 
     }else if(scope==='client'&&tc){
       S.transactions=S.transactions.filter(t=>t.clientId!==tc.id);
@@ -3353,7 +3324,6 @@ async function deleteBackup(id){
     msg:'이 백업을 삭제할까요?',
     okStr:`_doDeleteBackup(${id})`
   };
-  _pushModalHistory();
   renderModals();
 }
 async function _doDeleteBackup(id){
@@ -3503,32 +3473,17 @@ function importData(){
         // 데이터 유효성 검증
         const validC=data.clients.filter(c=>c.id&&c.name&&c.type);
         const validT=data.transactions.filter(t=>t.id&&t.clientId&&t.date&&t.type&&typeof t.amount==='number');
-        // PWA 환경에서 window.confirm 대신 앱 내부 모달 사용
-        M.confirm={
-          msg:`거래처 ${validC.length}개, 거래 ${validT.length}건을 불러옵니다.\n현재 데이터는 덮어씌워집니다. 계속할까요?`,
-          okStr:'_doImportData()'
-        };
-        // 불러올 데이터를 임시 저장
-        window._importPending={clients:validC,transactions:validT};
-        _pushModalHistory();
-        renderModals();
+        if(!confirm(`거래처 ${validC.length}개, 거래 ${validT.length}건을 불러옵니다.\n현재 데이터는 덮어씌워집니다. 계속할까요?`))return;
+        S.clients=validC;S.transactions=validT;
+        // Firestore 전체 동기화
+        await saveC();await saveTX();
+        render();showToast('데이터를 불러왔습니다.');
       }catch(err){showToast('파일을 읽는 중 오류가 발생했습니다.');}
     };
     reader.readAsText(file);
   };
   // iOS Safari: input이 DOM에 있어야 파일 선택창 열림
   input.click();
-}
-// importData의 확인 모달에서 실제 데이터 적용
-async function _doImportData(){
-  const pending=window._importPending;
-  if(!pending){showToast('불러올 데이터가 없습니다.');return;}
-  S.clients=pending.clients;
-  S.transactions=pending.transactions;
-  window._importPending=null;
-  // Firebase Realtime DB 전체 동기화
-  await saveC();await saveTX();
-  render();showToast('데이터를 불러왔습니다.');
 }
 
 // ── RENDER ────────────────────────────────────────────────────────────────────
@@ -3563,8 +3518,7 @@ function renderContent(){
   const ss=document.activeElement?.selectionStart;
   const se=document.activeElement?.selectionEnd;
   let html='';
-  if(S.view==='dashboard')html=buildDashboard();
-  else if(S.view==='clients')html=buildClients();
+  if(S.view==='clients')html=buildClients();
   else if(S.view==='transactions')html=buildTransactions();
   else if(S.view==='receivables')html=buildReceivables();
   const mc=document.getElementById('mainContent');if(mc)mc.innerHTML=html;
@@ -3858,99 +3812,6 @@ window.addEventListener('popstate', (e)=>{
 // 앱 초기화 완료 후 기준 상태 설정 (loadData 이후 호출됨)
 function _initHistory(){
   history.replaceState({modal:false}, '');
-}
-</script>
-
-<!-- ── Service Worker 등록 ───────────────────────────────────────────── -->
-<script>
-(function(){
-  if(!('serviceWorker' in navigator)) return;
-
-  // SW 등록
-  navigator.serviceWorker.register('./sw.js', { scope: './' })
-    .then(reg => {
-      console.log('[PWA] SW 등록 성공:', reg.scope);
-
-      // 새 버전 SW 감지 → 업데이트 토스트
-      reg.addEventListener('updatefound', () => {
-        const newWorker = reg.installing;
-        newWorker.addEventListener('statechange', () => {
-          if(newWorker.state === 'installed' && navigator.serviceWorker.controller){
-            // 기존 캐시가 있고 새 SW가 설치됨 → 업데이트 안내
-            showToast('🔄 새 버전이 있습니다. 앱을 다시 시작해 주세요.');
-          }
-        });
-      });
-    })
-    .catch(err => console.warn('[PWA] SW 등록 실패:', err));
-
-  // 컨트롤러 교체 시 자동 새로고침
-  let refreshing = false;
-  navigator.serviceWorker.addEventListener('controllerchange', () => {
-    if(!refreshing){ refreshing = true; window.location.reload(); }
-  });
-})();
-
-// ── PWA 설치 배너 (Android Chrome / Edge) ────────────────────────────
-let _deferredInstallPrompt = null;
-
-window.addEventListener('beforeinstallprompt', e => {
-  e.preventDefault();
-  _deferredInstallPrompt = e;
-  // 설치 안내 버튼을 사이드바에 노출
-  _showInstallBanner();
-});
-
-window.addEventListener('appinstalled', () => {
-  _deferredInstallPrompt = null;
-  _hideInstallBanner();
-  showToast('✅ 앱이 홈 화면에 설치됐습니다!');
-});
-
-function _showInstallBanner(){
-  // 이미 설치된 경우(standalone) 무시
-  if(window.matchMedia('(display-mode: standalone)').matches) return;
-  // 배너 엘리먼트가 없으면 생성
-  if(document.getElementById('pwaInstallBanner')) return;
-  const banner = document.createElement('div');
-  banner.id = 'pwaInstallBanner';
-  banner.style.cssText = [
-    'position:fixed','bottom:calc(68px + env(safe-area-inset-bottom,0px))',
-    'left:50%','transform:translateX(-50%)',
-    'background:#0f172a','color:#fff',
-    'padding:10px 16px','border-radius:12px',
-    'font-size:13px','font-weight:500',
-    'display:flex','align-items:center','gap:10px',
-    'z-index:8888','box-shadow:0 4px 20px rgba(0,0,0,.3)',
-    'white-space:nowrap','cursor:pointer',
-    'animation:slideUp .3s ease',
-  ].join(';');
-  banner.innerHTML = `
-    <span>📲 홈 화면에 앱 추가</span>
-    <button onclick="triggerPwaInstall()" style="background:#d97706;color:#fff;border:none;border-radius:8px;padding:5px 12px;font-size:12px;font-weight:700;cursor:pointer;">설치</button>
-    <button onclick="_hideInstallBanner()" style="background:none;border:none;color:#94a3b8;font-size:16px;cursor:pointer;line-height:1;">✕</button>`;
-  if(!document.getElementById('pwaSlideUpStyle')){
-    const st = document.createElement('style');
-    st.id = 'pwaSlideUpStyle';
-    st.textContent = '@keyframes slideUp{from{opacity:0;transform:translateX(-50%) translateY(20px)}to{opacity:1;transform:translateX(-50%) translateY(0)}}';
-    document.head.appendChild(st);
-  }
-  document.body.appendChild(banner);
-}
-
-function _hideInstallBanner(){
-  const el = document.getElementById('pwaInstallBanner');
-  if(el) el.remove();
-}
-
-function triggerPwaInstall(){
-  if(!_deferredInstallPrompt) return;
-  _deferredInstallPrompt.prompt();
-  _deferredInstallPrompt.userChoice.then(choice => {
-    if(choice.outcome === 'accepted') showToast('✅ 설치를 시작합니다!');
-    _deferredInstallPrompt = null;
-    _hideInstallBanner();
-  });
 }
 </script>
 </body>
