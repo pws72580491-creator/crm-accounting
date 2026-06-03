@@ -1565,7 +1565,7 @@ function _buildTxRow(tx,hideDate){
     (!hideDate?'<span class="col-date" style="color:#94a3b8;font-size:11px;">'+esc(tx.date)+'</span>':'')+
     '<div style="flex:1;min-width:0;">'+
       '<div style="font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+clientNameHtml+'</div>'+
-      '<div style="color:#94a3b8;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+esc(tx.memo||'-')+'</div>'+
+      '<div style="color:#94a3b8;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">'+(tx.taxType==='면세'?'<span style="font-size:10px;background:#f0fdf4;border:1px solid #86efac;color:#16a34a;border-radius:4px;padding:0px 4px;margin-right:3px;font-weight:600;">면세</span>':'')+esc(tx.memo||'-')+'</div>'+
     '</div>'+
     '<span class="col-type" style="font-size:11px;font-weight:600;color:'+color+';">'+esc(tx.type)+'</span>'+
     '<span class="col-amt" style="color:'+color+';font-size:12px;font-weight:600;">'+fmtW(tx.amount)+'</span>'+
@@ -1731,7 +1731,7 @@ function buildClientModal(){
 function buildTxModal(){
   const m=M.txModal;
   const isEd=m!=='add'&&typeof m==='object';
-  const f=isEd?m:{date:today(),clientId:S.clients[0]?.id||1,type:'매출',amount:'',tax:'',memo:'',status:'미수금'};
+  const f=isEd?m:{date:today(),clientId:S.clients[0]?.id||1,type:'매출',amount:'',tax:'',memo:'',status:'미수금',taxType:'과세'};
   const initClientName = isEd ? (S.clients.find(c=>c.id===f.clientId)?.name||'') : '';
   const clientOpts=S.clients.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
   const stOpts=(f.type==='매출'?['미수금','수금완료']:['미지급금','지급완료']).map(s=>`<option ${s===f.status?'selected':''}>${esc(s)}</option>`).join('');
@@ -1741,8 +1741,21 @@ function buildTxModal(){
       <div><label style="font-size:12px;color:#64748b;">거래일자<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><input id="tf_date" type="date" value="${esc(f.date)}" max="${localDate()}" style="${ISX}"></div></div>
       <div><label style="font-size:12px;color:#64748b;">구분<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><select id="tf_type" onchange="onTxType(this.value)" style="${ISX}"><option ${f.type==='매출'?'selected':''}>매출</option><option ${f.type==='매입'?'selected':''}>매입</option></select></div></div>
       <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">거래처<span style="color:#dc2626">*</span></label><div style="margin-top:4px;position:relative;"><input id="tf_clientName" list="tf_clientList" value="${esc(initClientName)}" placeholder="거래처명 입력 또는 선택…" autocomplete="off" oninput="_onTxClientInput(this.value)" onkeydown="if(event.key==='Enter'||event.keyCode===13){this.blur();}" style="${ISX}"><datalist id="tf_clientList">${clientOpts}</datalist><input type="hidden" id="tf_clientId" value="${isEd?f.clientId:''}"></div></div>
+      <div style="grid-column:1/-1;">
+        <label style="font-size:12px;color:#64748b;">과세 구분<span style="color:#dc2626">*</span></label>
+        <div id="taxTypeWrap" style="margin-top:6px;display:flex;gap:6px;">
+          ${['과세','면세'].map(v=>{
+            const sel=(f.taxType||'과세')===v;
+            return `<button type="button" id="taxTypeBtn_${v}" onclick="onTxTaxType('${v}')"
+              style="flex:1;padding:8px 0;border-radius:8px;border:2px solid ${sel?'#d97706':'#e2e8f0'};background:${sel?'#fef3c7':'#f8fafc'};color:${sel?'#b45309':'#64748b'};font-size:13px;font-weight:${sel?700:400};cursor:pointer;transition:all .15s;">
+              ${v==='과세'?'🧾 과세 (VAT 10%)':'🔖 면세'}
+            </button>`;
+          }).join('')}
+        </div>
+        <input type="hidden" id="tf_taxType" value="${f.taxType||'과세'}">
+      </div>
       <div><label style="font-size:12px;color:#64748b;">공급가액<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><input id="tf_amount" value="${f.amount?fmt(f.amount):''}" oninput="applyAmtFmt(this);onTxAmt(this.value)" placeholder="0" style="${ISX}" ${FB}></div></div>
-      <div><label style="font-size:12px;color:#64748b;">세액 (자동계산)</label><div style="margin-top:4px;"><input id="tf_tax" value="${f.tax?fmt(f.tax):''}" oninput="applyAmtFmt(this);onTxTax(this.value)" placeholder="0" style="${ISX}" ${FB}></div></div>
+      <div id="tf_taxRow"><label style="font-size:12px;color:#64748b;">세액 (자동계산)</label><div style="margin-top:4px;"><input id="tf_tax" value="${f.tax?fmt(f.tax):''}" oninput="applyAmtFmt(this);onTxTax(this.value)" placeholder="0" style="${ISX}" ${FB}></div></div>
       <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">적요</label><div style="margin-top:4px;"><input id="tf_memo" value="${esc(f.memo||'')}" placeholder="거래 내용" style="${ISX}" ${FB}></div></div>
       <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">상태</label><div style="margin-top:4px;"><select id="tf_status" style="${ISX}">${stOpts}</select></div></div>
     </div>
@@ -1751,7 +1764,16 @@ function buildTxModal(){
       <button onclick="closeTxModal()" style="flex:1;padding:10px 0;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:8px;font-size:13px;cursor:pointer;">취소</button>
       <button onclick="submitTxModal(${isEd?f.id:'null'})" style="flex:1;padding:10px 0;background:#d97706;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;">저장</button>
     </div>`;
-  return modalWrap(isEd?'거래 수정':'거래 추가','closeTxModal()',480,content);
+  const initScript=`<script>
+    (function(){
+      var tt=document.getElementById('tf_taxType');
+      if(tt&&tt.value==='면세'){
+        var row=document.getElementById('tf_taxRow');
+        if(row)row.style.display='none';
+      }
+    })();
+  <\/script>`;
+  return modalWrap(isEd?'거래 수정':'거래 추가','closeTxModal()',480,content+initScript);
 }
 
 // ── CONFIRM ───────────────────────────────────────────────────────────────────
@@ -3990,6 +4012,7 @@ function submitTxModal(existId){ existId = existId==='null'?null:existId;
     ...(_origTx||{}),
     date:dateVal,clientId,
     type:document.getElementById('tf_type')?.value,
+    taxType:document.getElementById('tf_taxType')?.value||'과세',
     amount,tax,
     memo:document.getElementById('tf_memo')?.value||'',
     status:document.getElementById('tf_status')?.value
@@ -4005,9 +4028,32 @@ function confirmDelTx(id){
 
 function onTxAmt(val){
   const n=parseInt(val.replace(/[^0-9]/g,''))||0;
-  const tax=Math.round(n*.1);
+  const isTaxable=(document.getElementById('tf_taxType')?.value||'과세')==='과세';
+  const tax=isTaxable?Math.round(n*.1):0;
   const tf=document.getElementById('tf_tax');if(tf)tf.value=tax?fmt(tax):'';
   updateTxTotal(n,tax);
+}
+function onTxTaxType(v){
+  // 버튼 스타일 토글
+  ['과세','면세'].forEach(t=>{
+    const btn=document.getElementById('taxTypeBtn_'+t);
+    if(!btn)return;
+    const sel=t===v;
+    btn.style.border='2px solid '+(sel?'#d97706':'#e2e8f0');
+    btn.style.background=sel?'#fef3c7':'#f8fafc';
+    btn.style.color=sel?'#b45309':'#64748b';
+    btn.style.fontWeight=sel?'700':'400';
+  });
+  const hid=document.getElementById('tf_taxType');
+  if(hid)hid.value=v;
+  // 면세: 세액 행 숨기고 0으로 초기화
+  const taxRow=document.getElementById('tf_taxRow');
+  if(taxRow)taxRow.style.display=v==='면세'?'none':'';
+  const taxEl=document.getElementById('tf_tax');
+  if(v==='면세'&&taxEl){taxEl.value='';}
+  // 공급가액 기준으로 합계 재계산
+  const amtEl=document.getElementById('tf_amount');
+  if(amtEl)onTxAmt(amtEl.value);
 }
 function onTxTax(val){
   const tax=parseInt(val.replace(/[^0-9]/g,''))||0;
