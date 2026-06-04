@@ -716,10 +716,20 @@ function buildStatModal() {
   orders.forEach(o => { if (o.date) monthSet.add(o.date.slice(0, 7)); });
   const monthList = [...monthSet].sort().reverse();
 
-  const monthSel = `<select onchange="setStatMonth(this.value)"
-    style="border:1px solid #e2e8f0;border-radius:8px;padding:5px 10px;font-size:13px;color:#0f172a;background:#fff;cursor:pointer;font-weight:600;">
-    ${monthList.map(m => `<option value="${m}"${m === month ? ' selected' : ''}>${fmtMonth(m)}</option>`).join('')}
-  </select>`;
+  const curIdx = monthList.indexOf(month);
+  const prevM  = curIdx < monthList.length - 1 ? monthList[curIdx + 1] : null;
+  const nextM  = curIdx > 0                    ? monthList[curIdx - 1] : null;
+
+  const monthNav = `
+    <div style="display:flex;align-items:center;gap:6px;margin-left:auto;">
+      <button onclick="${prevM ? `setStatMonth('${prevM}')` : 'void 0'}"
+        ${!prevM ? 'disabled' : ''}
+        style="width:32px;height:32px;border:1px solid #e2e8f0;border-radius:8px;background:${prevM?'#fff':'#f8fafc'};color:${prevM?'#374151':'#cbd5e1'};font-size:15px;cursor:${prevM?'pointer':'default'};display:flex;align-items:center;justify-content:center;">&#8249;</button>
+      <span style="font-size:13px;font-weight:700;color:#0f172a;min-width:72px;text-align:center;">${fmtMonth(month)}</span>
+      <button onclick="${nextM ? `setStatMonth('${nextM}')` : 'void 0'}"
+        ${!nextM ? 'disabled' : ''}
+        style="width:32px;height:32px;border:1px solid #e2e8f0;border-radius:8px;background:${nextM?'#fff':'#f8fafc'};color:${nextM?'#374151':'#cbd5e1'};font-size:15px;cursor:${nextM?'pointer':'default'};display:flex;align-items:center;justify-content:center;">&#8250;</button>
+    </div>`;
 
   let body = '';
   if (step === 'loading') {
@@ -843,7 +853,7 @@ function buildStatModal() {
               style="display:flex;align-items:center;gap:5px;background:#f9e000;color:#3c1e1e;border:none;border-radius:8px;padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer;">
               🟡 카톡
             </button>
-            <div style="margin-left:auto;">${monthSel}</div>
+            ${monthNav}
           </div>` : `<div style="border-bottom:1px solid #f1f5f9;margin-top:12px;"></div>`}
         </div>
         <div style="overflow-y:auto;padding:16px 18px;-webkit-overflow-scrolling:touch;">${body}</div>
