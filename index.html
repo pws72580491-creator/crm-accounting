@@ -66,8 +66,22 @@ function hideSplash() {
   const el = document.getElementById('splash');
   if (!el) return;
   el.classList.add('hidden');
-  setTimeout(() => el.remove(), 350);
+  setTimeout(() => { try { el.remove(); } catch(e){} }, 350);
 }
+
+// 최대 8초 후 강제로 스플래시 제거 (무한 로딩 방지)
+setTimeout(function() {
+  const el = document.getElementById('splash');
+  if (!el) return;
+  el.classList.add('hidden');
+  setTimeout(function() { try { el.remove(); } catch(e){} }, 350);
+}, 8000);
+
+// async 오류 (unhandledrejection) 도 잡아서 스플래시 제거
+window.addEventListener('unhandledrejection', function(e) {
+  console.error('[unhandledrejection]', e.reason);
+  hideSplash();
+});
 </script>
 
 <!-- ── JS 모듈 (의존 순서대로 로드) ──────────────────────────────────────────── -->
