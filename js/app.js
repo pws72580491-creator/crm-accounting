@@ -561,7 +561,7 @@ function render() {
   const se  = document.activeElement?.selectionEnd;
 
   let content = '';
-  if      (S.view === 'dashboard')    content = buildDashboard();
+  if      (S.view === 'dashboard')    { checkDashLock(); content = S.dashLocked ? buildDashLockScreen() : buildDashboard(); }
   else if (S.view === 'clients')      content = buildClients();
   else if (S.view === 'transactions') content = buildTransactions();
   else if (S.view === 'receivables')  content = buildReceivables();
@@ -596,17 +596,18 @@ function renderContent() {
 function renderModals() {
   const root   = document.getElementById('modal-root');
   const drawer = buildDrawer();
-  if      (M.confirm)       root.innerHTML = drawer + buildConfirm();
-  else if (M.scanModal)     root.innerHTML = drawer + buildScanModal();
-  else if (M.syncModal)     root.innerHTML = drawer + buildSyncModal();
-  else if (M.statModal)     root.innerHTML = drawer + buildStatModal();
-  else if (M.resetModal)    root.innerHTML = drawer + buildResetModal();
-  else if (M.backupModal)   root.innerHTML = drawer + buildBackupModal();
-  else if (M.qpModal)       root.innerHTML = drawer + buildQuickPayModal();
-  else if (M.batchPayModal) root.innerHTML = drawer + buildBatchPayModal();
-  else if (M.clientModal)   root.innerHTML = drawer + buildClientModal();
-  else if (M.txModal)       root.innerHTML = drawer + buildTxModal();
-  else                      root.innerHTML = drawer;
+  if      (_pinModal)           root.innerHTML = drawer + buildPinModal();
+  else if (M.confirm)           root.innerHTML = drawer + buildConfirm();
+  else if (M.scanModal)         root.innerHTML = drawer + buildScanModal();
+  else if (M.syncModal)         root.innerHTML = drawer + buildSyncModal();
+  else if (M.statModal)         root.innerHTML = drawer + buildStatModal();
+  else if (M.resetModal)        root.innerHTML = drawer + buildResetModal();
+  else if (M.backupModal)       root.innerHTML = drawer + buildBackupModal();
+  else if (M.qpModal)           root.innerHTML = drawer + buildQuickPayModal();
+  else if (M.batchPayModal)     root.innerHTML = drawer + buildBatchPayModal();
+  else if (M.clientModal)       root.innerHTML = drawer + buildClientModal();
+  else if (M.txModal)           root.innerHTML = drawer + buildTxModal();
+  else                          root.innerHTML = drawer;
 }
 
 // ── HANDLERS ─────────────────────────────────────────────────────────────────
@@ -620,6 +621,160 @@ function goToClientTx(clientId, isSales) {
   S.view          = 'transactions';
   render();
 }
+// ── DASHBOARD PIN 잠금 시스템 ─────────────────────────────────────────────────
+const PIN_KEY      = 'crm_dash_pin';   // localStorage: SHA-256 해시 저장
+const PIN_TS_KEY   = 'crm_dash_pin_ts'; // 마지막 인증 시각
+const PIN_TIMEOUT  = 5 * 60 * 1000;    // 5분 비활성 시 자동 잠금
+
+function _pinHash(pin) {
+  // 간단한 해시 (SHA-256 없이 빠른 djb2 변형)
+  let h = 5381;
+  for (let i = 0; i < pin.length; i++) h = (h * 33) ^ pin.charCodeAt(i);
+  return (h >>> 0).toString(16) + pin.length;
+}
+function hasDashPin()    { return !!localStorage.getItem(PIN_KEY); }
+function checkDashPin(p) { return localStorage.getItem(PIN_KEY) === _pinHash(p); }
+function saveDashPin(p)  { localStorage.setItem(PIN_KEY, _pinHash(p)); _stampPinAuth(); }
+function clearDashPin()  { localStorage.removeItem(PIN_KEY); localStorage.removeItem(PIN_TS_KEY); S.dashLocked = false; }
+function _stampPinAuth() { localStorage.setItem(PIN_TS_KEY, Date.now().toString()); }
+function _isPinExpired() {
+  const ts = parseInt(localStorage.getItem(PIN_TS_KEY) || '0', 10);
+  return Date.now() - ts > PIN_TIMEOUT;
+}
+
+// 앱 시작 / 뷰 전환 시 PIN 만료 체크
+function checkDashLock() {
+  if (!hasDashPin()) { S.dashLocked = false; return; }
+  if (_isPinExpired()) S.dashLocked = true;
+}
+
+// PIN 모달 상태
+let _pinModal = null; // null | {mode:'unlock'|'set'|'change'|'remove', step:'input'|'confirm', buf:'', first:''}
+
+function openPinModal(mode) {
+  _pinModal = { mode, step: 'input', buf: '', first: '' };
+  renderModals();
+}
+function closePinModal() { _pinModal = null; renderModals(); }
+
+function _pinTitle() {
+  const m = _pinModal?.mode;
+  if (m === 'unlock') return '🔒 대시보드 잠금 해제';
+  if (m === 'set')    return '🔑 PIN 번호 설정';
+  if (m === 'change') return _pinModal.step === 'input' ? '🔑 현재 PIN 입력' : '🔑 새 PIN 입력';
+  if (m === 'remove') return '🔑 PIN 입력 후 삭제';
+  return '';
+}
+function _pinSubtitle() {
+  const { mode, step } = _pinModal;
+  if (mode === 'unlock') return '4자리 PIN을 입력하세요';
+  if (mode === 'set')    return step === 'input'   ? '사용할 4자리 PIN을 입력하세요' : 'PIN을 한 번 더 입력하세요';
+  if (mode === 'change') return step === 'input'   ? '현재 PIN을 입력하세요'         :
+                                step === 'new'     ? '새 PIN을 입력하세요'           : '새 PIN을 한 번 더 입력하세요';
+  if (mode === 'remove') return 'PIN을 입력하면 잠금이 해제됩니다';
+  return '';
+}
+
+function _pinPressKey(k) {
+  if (!_pinModal) return;
+  if (_pinModal.buf.length >= 4) return;
+  _pinModal.buf += k;
+  renderModals();
+  if (_pinModal.buf.length === 4) setTimeout(_pinSubmit, 120);
+}
+function _pinBackspace() {
+  if (!_pinModal) return;
+  _pinModal.buf = _pinModal.buf.slice(0, -1);
+  renderModals();
+}
+
+function _pinSubmit() {
+  if (!_pinModal) return;
+  const { mode, step, buf, first } = _pinModal;
+
+  if (mode === 'unlock') {
+    if (checkDashPin(buf)) {
+      _stampPinAuth(); S.dashLocked = false; closePinModal(); render();
+      showToast('✅ 잠금이 해제됐습니다');
+    } else {
+      _pinModal.buf = ''; renderModals(); showToast('❌ PIN이 맞지 않습니다');
+    }
+    return;
+  }
+  if (mode === 'remove') {
+    if (checkDashPin(buf)) {
+      clearDashPin(); closePinModal(); render();
+      showToast('🔓 PIN 잠금이 해제됐습니다');
+    } else {
+      _pinModal.buf = ''; renderModals(); showToast('❌ PIN이 맞지 않습니다');
+    }
+    return;
+  }
+  if (mode === 'set') {
+    if (step === 'input') {
+      _pinModal.first = buf; _pinModal.buf = ''; _pinModal.step = 'confirm'; renderModals();
+    } else {
+      if (buf === first) {
+        saveDashPin(buf); closePinModal(); render(); showToast('🔑 PIN이 설정됐습니다');
+      } else {
+        _pinModal.buf = ''; _pinModal.step = 'input'; _pinModal.first = '';
+        renderModals(); showToast('❌ PIN이 일치하지 않습니다. 다시 입력하세요');
+      }
+    }
+    return;
+  }
+  if (mode === 'change') {
+    if (step === 'input') {
+      if (checkDashPin(buf)) {
+        _pinModal.step = 'new'; _pinModal.buf = ''; renderModals();
+      } else {
+        _pinModal.buf = ''; renderModals(); showToast('❌ PIN이 맞지 않습니다');
+      }
+    } else if (step === 'new') {
+      _pinModal.first = buf; _pinModal.buf = ''; _pinModal.step = 'confirm'; renderModals();
+    } else {
+      if (buf === first) {
+        saveDashPin(buf); closePinModal(); render(); showToast('🔑 PIN이 변경됐습니다');
+      } else {
+        _pinModal.buf = ''; _pinModal.step = 'new'; _pinModal.first = '';
+        renderModals(); showToast('❌ PIN이 일치하지 않습니다. 다시 입력하세요');
+      }
+    }
+  }
+}
+
+function buildPinModal() {
+  const { buf } = _pinModal;
+  const dots = [0,1,2,3].map(i =>
+    `<div style="width:14px;height:14px;border-radius:50%;background:${i < buf.length ? '#b45309' : '#e2e8f0'};border:2px solid ${i < buf.length ? '#b45309' : '#cbd5e1'};transition:background .15s;"></div>`
+  ).join('');
+  const keys = ['1','2','3','4','5','6','7','8','9','','0','⌫'];
+  const keyBtns = keys.map(k => {
+    if (k === '') return `<div></div>`;
+    if (k === '⌫') return `<button onclick="_pinBackspace()" style="background:#f1f5f9;border:none;border-radius:12px;height:60px;font-size:20px;cursor:pointer;color:#475569;">⌫</button>`;
+    return `<button onclick="_pinPressKey('${k}')" style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;height:60px;font-size:20px;font-weight:600;cursor:pointer;color:#0f172a;active:background:#fef3c7;">${k}</button>`;
+  }).join('');
+
+  return `<div onclick="closePinModal()" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;display:flex;align-items:flex-end;justify-content:center;">
+    <div onclick="event.stopPropagation()" style="background:#fff;border-radius:20px 20px 0 0;width:100%;max-width:420px;padding:28px 24px 40px;">
+      <div style="width:40px;height:4px;background:#e2e8f0;border-radius:2px;margin:0 auto 20px;"></div>
+      <div style="text-align:center;font-size:17px;font-weight:700;color:#0f172a;margin-bottom:6px;">${_pinTitle()}</div>
+      <div style="text-align:center;font-size:13px;color:#64748b;margin-bottom:24px;">${_pinSubtitle()}</div>
+      <div style="display:flex;justify-content:center;gap:16px;margin-bottom:28px;">${dots}</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;">${keyBtns}</div>
+    </div>
+  </div>`;
+}
+
+function buildDashLockScreen() {
+  return `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:60vh;gap:16px;padding:40px 24px;text-align:center;">
+    <div style="font-size:56px;">🔒</div>
+    <div style="font-size:18px;font-weight:700;color:#0f172a;">대시보드가 잠겨 있습니다</div>
+    <div style="font-size:13px;color:#64748b;">PIN 번호를 입력하면 내용을 볼 수 있습니다</div>
+    <button onclick="openPinModal('unlock')" style="margin-top:8px;padding:13px 36px;background:#b45309;color:#fff;border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;">🔑 PIN 입력</button>
+  </div>`;
+}
+
 function setView(v) { S.view = v; render(); }
 
 function setCSearch(v) {

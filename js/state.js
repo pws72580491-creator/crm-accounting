@@ -8,6 +8,8 @@ let S = {
   txMonth: null, txPeriodMode: 'daily', txDate: null, txWeek: null,
   // UI
   drawerOpen: false, rcvSearch: '',
+  // 대시보드 PIN 잠금
+  dashLocked: false,
 };
 
 let M = {

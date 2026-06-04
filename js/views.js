@@ -204,7 +204,14 @@ function buildDashboard() {
           <h1 class="page-title" style="color:#0f172a;font-size:20px;font-weight:700;">대시보드</h1>
           <p style="color:#64748b;font-size:12px;margin-top:3px;">${esc(dateStr)}</p>
         </div>
-        ${monthNav}
+        <div style="display:flex;align-items:center;gap:8px;">
+          ${hasDashPin()
+            ? `<button onclick="openPinModal('change')" title="PIN 변경" style="background:none;border:1px solid #e2e8f0;border-radius:8px;padding:5px 10px;font-size:11px;color:#64748b;cursor:pointer;">🔑 PIN 변경</button>
+               <button onclick="openPinModal('remove')" title="PIN 해제" style="background:none;border:1px solid #e2e8f0;border-radius:8px;padding:5px 10px;font-size:11px;color:#64748b;cursor:pointer;">🔓 해제</button>`
+            : `<button onclick="openPinModal('set')" title="PIN 설정" style="background:none;border:1px solid #e2e8f0;border-radius:8px;padding:5px 10px;font-size:11px;color:#64748b;cursor:pointer;">🔒 PIN 설정</button>`
+          }
+          ${monthNav}
+        </div>
       </div>
       ${topCards}
       ${midCards}
