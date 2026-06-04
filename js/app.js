@@ -425,7 +425,7 @@ function confirmQuickPay() {
   closeQuickPay();
   const icon = mo.method === 'transfer' ? '🏦' : mo.method === 'mixed' ? '🔀' : '💵';
   showToast(icon + ' ' + (isFull ? '완납 처리' : '부분 수금 처리'));
-  _afterNapumPatch(updatedTx, 1200);
+  _afterNapumPatch(updatedTx);
 }
 
 // ── 일괄 수금 ─────────────────────────────────────────────────────────────────
@@ -536,14 +536,21 @@ function confirmBatchPay() {
   showToast(`${_iconSnap} ${_countSnap}건 수금 처리`);
 
   if (_napumTxsSnap.length > 0) {
-    setTimeout(() => {
-      Promise.all(_napumTxsSnap.map(t => _patchNapumOrder(t._napumId, _buildNapumPatch(t))))
-        .then(results => {
-          const ok   = results.filter(Boolean).length;
-          const fail = results.length - ok;
-          showToast(fail > 0 ? `📦 납품 관리 ${ok}건 반영 / ⚠️ ${fail}건 실패` : `📦 납품 관리 ${ok}건 반영됨`);
-        }).catch(() => showToast('⚠️ 납품 관리 반영 실패'));
-    }, 1200);
+    _napumTxsSnap.forEach(t => _napumOwnPatchKeys.add(t._napumId));
+    Promise.all(_napumTxsSnap.map(t => _patchNapumOrder(t._napumId, _buildNapumPatch(t))))
+      .then(results => {
+        const ok   = results.filter(Boolean).length;
+        const fail = results.length - ok;
+        showToast(fail > 0 ? `📦 납품 관리 ${ok}건 반영 / ⚠️ ${fail}건 실패` : `📦 납품 관리 ${ok}건 반영됨`);
+        // 패치 성공한 tx들 즉시 re-fetch해 CRM UI 갱신
+        _napumTxsSnap.forEach((t, i) => {
+          if (results[i]) _refetchNapumOrderAfterPatch(t._napumId);
+          else _napumOwnPatchKeys.delete(t._napumId);
+        });
+      }).catch(() => {
+        _napumTxsSnap.forEach(t => _napumOwnPatchKeys.delete(t._napumId));
+        showToast('⚠️ 납품 관리 반영 실패');
+      });
   }
 }
 

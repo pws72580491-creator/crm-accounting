@@ -256,7 +256,13 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj) {
     lsSet('crm_napum_synced', [...synced]);
     (async () => { await saveC(); await saveTX(); })();
     render();
-    showToast('📦 납품 관리에서 업데이트됨');
+    // 자기 패치 echo인 경우 토스트 생략 (이미 _afterNapumPatch에서 표시함)
+    const isOwnEcho = orders.some(o => _napumOwnPatchKeys?.has(`${ws.id}:${o.id}`));
+    if (!isOwnEcho) showToast('📦 납품 관리에서 업데이트됨');
+  } else {
+    // changed=false여도 자기 패치 echo 콜백이면 화면 갱신 (결제 후 즉시 반영)
+    const isOwnEcho = orders.some(o => _napumOwnPatchKeys?.has(`${ws.id}:${o.id}`));
+    if (isOwnEcho) render();
   }
 }
 

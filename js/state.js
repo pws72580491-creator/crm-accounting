@@ -230,13 +230,69 @@ function completeStatus(txId, status) {
 }
 
 /** 납품 역방향 패치 공통 헬퍼 (중복 제거) */
-function _afterNapumPatch(tx, delayMs = 800) {
+function _afterNapumPatch(tx, delayMs = 0) {
   if (!tx || !tx._napumId) return;
-  setTimeout(() => {
+  const dopatch = () => {
+    _napumOwnPatchKeys.add(tx._napumId);
     _patchNapumOrder(tx._napumId, _buildNapumPatch(tx))
-      .then(ok => showToast(ok ? '📦 납품 관리에도 반영됨' : '⚠️ 납품 관리 반영 실패 (로그 확인)'))
-      .catch(() => showToast('⚠️ 납품 관리 반영 실패'));
-  }, delayMs);
+      .then(ok => {
+        if (ok) {
+          showToast('📦 납품 관리에도 반영됨');
+          // 패치 성공 후 납품앱 Firebase에서 즉시 re-fetch해 CRM UI 갱신
+          _refetchNapumOrderAfterPatch(tx._napumId);
+        } else {
+          _napumOwnPatchKeys.delete(tx._napumId);
+          showToast('⚠️ 납품 관리 반영 실패 (로그 확인)');
+        }
+      })
+      .catch(() => {
+        _napumOwnPatchKeys.delete(tx._napumId);
+        showToast('⚠️ 납품 관리 반영 실패');
+      });
+  };
+  if (delayMs > 0) setTimeout(dopatch, delayMs); else dopatch();
+}
+
+/** CRM이 직접 패치한 napumId 목록 (Firebase echo 구분용) */
+const _napumOwnPatchKeys = new Set();
+
+/** 패치 후 Firebase에서 해당 order를 즉시 re-fetch해 CRM UI 갱신 */
+async function _refetchNapumOrderAfterPatch(napumKey) {
+  if (!napumKey || !napumKey.includes(':')) return;
+  const sep     = napumKey.lastIndexOf(':');
+  const wsId    = napumKey.slice(0, sep);
+  const orderId = napumKey.slice(sep + 1);
+  try {
+    if (typeof firebase === 'undefined') return;
+    const napumDb = _getNapumApp().database();
+    const snap    = await napumDb.ref(`workspaces/${wsId}/orders/${orderId}`).once('value');
+    if (!snap.exists()) return;
+    const order   = snap.val();
+    // CRM 상태에서 해당 tx 직접 갱신
+    let changed = false;
+    S.transactions = S.transactions.map(t => {
+      if (t._napumId !== napumKey) return t;
+      const prev  = JSON.stringify(t);
+      const next  = { ...t,
+        status:    order.isPaid ? (t.status === '미지급금' ? '지급완료' : '수금완료') : t.status,
+        paidAmount: order.paidAmount ?? t.paidAmount,
+        paidAt:    order.paidAt     ?? t.paidAt,
+        paidMethod: order.paidMethod ?? t.paidMethod,
+      };
+      if (order.paidMethodDetail) next.paidMethodDetail = order.paidMethodDetail;
+      if (JSON.stringify(next) !== prev) changed = true;
+      return next;
+    });
+    if (changed) {
+      lsSet('crm_tx', S.transactions);
+      render();
+    }
+    // 자기 패치 echo 허용 처리 완료 후 제거
+    setTimeout(() => _napumOwnPatchKeys.delete(napumKey), 3000);
+  } catch (e) {
+    console.warn('[refetch] 납품 order re-fetch 실패:', e.message);
+    _napumOwnPatchKeys.delete(napumKey);
+  }
 }
 
 // ── 데이터 로드 ───────────────────────────────────────────────────────────────
