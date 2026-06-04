@@ -823,24 +823,28 @@ function buildStatModal() {
     <div onclick="closeStatModal()" style="position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:50;display:flex;align-items:flex-end;justify-content:center;padding-bottom:env(safe-area-inset-bottom);">
       <div onclick="event.stopPropagation()" style="background:#fff;border-radius:18px 18px 0 0;width:100%;max-width:520px;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 -8px 40px rgba(0,0,0,.18);">
         <div style="width:36px;height:4px;background:#e2e8f0;border-radius:2px;margin:10px auto 0;flex-shrink:0;"></div>
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px 12px;border-bottom:1px solid #f1f5f9;flex-shrink:0;">
-          <div>
-            <div style="font-weight:700;color:#0f172a;font-size:15px;">📋 ${esc(clientName)}</div>
-            <div style="color:#94a3b8;font-size:11px;margin-top:1px;">납품 거래명세표</div>
+        <div style="padding:14px 18px 0;flex-shrink:0;">
+          <!-- 1행: 거래처명 + 닫기 -->
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;">
+            <div>
+              <div style="font-weight:700;color:#0f172a;font-size:15px;">📋 ${esc(clientName)}</div>
+              <div style="color:#64748b;font-size:12px;margin-top:2px;">납품 거래명세표</div>
+            </div>
+            <button onclick="closeStatModal()" style="background:none;border:none;cursor:pointer;color:#94a3b8;padding:2px;">${I.x}</button>
           </div>
-          <div style="display:flex;align-items:center;gap:8px;">
-            ${step === 'done' ? `
-              <button onclick="shareStatModal('sms')" title="문자 전송"
-                style="display:flex;align-items:center;gap:4px;background:#16a34a;color:#fff;border:none;border-radius:8px;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer;">
-                💬 문자
-              </button>
-              <button onclick="shareStatModal('kakao')" title="카카오톡/공유"
-                style="display:flex;align-items:center;gap:4px;background:#f9e000;color:#3c1e1e;border:none;border-radius:8px;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer;">
-                🟡 카톡
-              </button>
-              ${monthSel}` : ''}
-            <button onclick="closeStatModal()" style="background:none;border:none;cursor:pointer;color:#94a3b8;">${I.x}</button>
-          </div>
+          <!-- 2행: 공유버튼 + 월선택 -->
+          ${step === 'done' ? `
+          <div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding-bottom:12px;border-bottom:1px solid #f1f5f9;">
+            <button onclick="shareStatModal('sms')" title="문자 전송"
+              style="display:flex;align-items:center;gap:5px;background:#16a34a;color:#fff;border:none;border-radius:8px;padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer;">
+              💬 문자
+            </button>
+            <button onclick="shareStatModal('kakao')" title="카카오톡/공유"
+              style="display:flex;align-items:center;gap:5px;background:#f9e000;color:#3c1e1e;border:none;border-radius:8px;padding:7px 14px;font-size:13px;font-weight:600;cursor:pointer;">
+              🟡 카톡
+            </button>
+            <div style="margin-left:auto;">${monthSel}</div>
+          </div>` : `<div style="border-bottom:1px solid #f1f5f9;margin-top:12px;"></div>`}
         </div>
         <div style="overflow-y:auto;padding:16px 18px;-webkit-overflow-scrolling:touch;">${body}</div>
       </div>
