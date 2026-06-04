@@ -237,6 +237,8 @@ function buildDashboard() {
 function _buildCRows() {
   const workspaces = _getWorkspaces();
   function clientWsId(clientId) {
+    const c = S.clients.find(x => x.id === clientId);
+    if (c && c._wsId) return c._wsId;
     const tx = S.transactions.find(t => t.clientId === clientId && t._napumId);
     if (!tx) return null;
     const sep = tx._napumId.lastIndexOf(':');
@@ -327,6 +329,8 @@ function _buildCRows() {
 function buildClients() {
   const workspaces = _getWorkspaces();
   function clientWsId(clientId) {
+    const c = S.clients.find(x => x.id === clientId);
+    if (c && c._wsId) return c._wsId;
     const tx = S.transactions.find(t => t.clientId === clientId && t._napumId);
     if (!tx) return null;
     const sep = tx._napumId.lastIndexOf(':');

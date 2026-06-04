@@ -144,6 +144,7 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj) {
         id: nextId(S.clients), name: nc.name, bizNo: '', rep: '', email: '',
         phone: nc.phone || '', address: nc.address || '', type: '매출처',
         memo: `[${ws.label}]${nc.note ? ' ' + nc.note : ''}`,
+        _wsId: ws.id,
       };
       S.clients = [...S.clients, newC];
       nameToId[nc.name] = newC.id; changed = true;
@@ -155,6 +156,7 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj) {
         const next = { ...c };
         if (nc.phone   && !c.phone)   next.phone   = nc.phone;
         if (nc.address && !c.address) next.address = nc.address;
+        if (!c._wsId) next._wsId = ws.id;
         if (JSON.stringify(next) !== prev) { changed = true; return next; }
         return c;
       });
@@ -170,6 +172,7 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj) {
       id: nextId(S.clients), name: crmName, bizNo: '', rep: '', email: '',
       phone: nc?.phone || '', address: nc?.address || '', type: '매출처',
       memo: `[${ws.label}] (주문에서 자동 추가)`,
+      _wsId: ws.id,
     };
     S.clients = [...S.clients, newC];
     nameToId[crmName] = newC.id; changed = true;
@@ -238,7 +241,7 @@ function closeSyncModal() { M.syncModal = null; renderModals(); }
 
 function syncAddWorkspace() {
   const sm = M.syncModal;
-  const id    = (sm.newInput || '').trim().toLowerCase();
+  const id    = (sm.newInput || '').trim();
   const label = (sm.newLabel || '').trim();
   if (!id) { showToast('워크스페이스 ID를 입력하세요.'); return; }
   const ws = _getWorkspaces();
@@ -315,6 +318,7 @@ async function doSyncFromDelivery() {
               id: nextId(S.clients), name: nc.name, bizNo: '', rep: '', email: '',
               phone: nc.phone || '', address: nc.address || '', type: '매출처',
               memo: `[${ws.label}]${nc.note ? ' ' + nc.note : ''}`,
+              _wsId: ws.id,
             };
             S.clients = [...S.clients, newC];
             nameToId[nc.name] = newC.id; wsNewClients++; totalNewClients++;
@@ -325,6 +329,7 @@ async function doSyncFromDelivery() {
               const next = { ...c };
               if (nc.phone   && !c.phone)   next.phone   = nc.phone;
               if (nc.address && !c.address) next.address = nc.address;
+              if (!c._wsId) next._wsId = ws.id;
               return next;
             });
           }
@@ -342,6 +347,7 @@ async function doSyncFromDelivery() {
               id: nextId(S.clients), name: crmName, bizNo: '', rep: '', email: '',
               phone: nc?.phone || '', address: nc?.address || '', type: '매출처',
               memo: `[${ws.label}] (주문에서 자동 추가)`,
+              _wsId: ws.id,
             };
             S.clients = [...S.clients, newC];
             nameToId[crmName] = newC.id; wsNewClients++; totalNewClients++;
