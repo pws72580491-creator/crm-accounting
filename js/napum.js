@@ -108,7 +108,30 @@ async function attachNapumListeners() {
       .catch(e => console.warn('[납품 실시간] clients 초기 로드 실패:', ws.id, e.message));
 
     // 자리 확보 (중복 등록 방지용 임시 마커)
-    _napumListeners[ws.id] = _napumListeners[ws.id] || { _pending: true };
+    _napumListeners[ws.id] = { _pending: true };
+  }
+}
+
+// ── 납품 리스너 재연결 (백그라운드 복귀 / 네트워크 복구) ─────────────────────
+function _reattachNapumListenersIfNeeded() {
+  const workspaces = _getWorkspaces();
+  if (!workspaces.length) return;
+
+  // _pending 마커이거나 ordersRef가 없는 ws는 리스너가 실제로 안 붙은 것
+  const needReattach = workspaces.some(ws => {
+    const h = _napumListeners[ws.id];
+    return !h || h._pending || !h.ordersRef;
+  });
+
+  if (needReattach) {
+    // 불완전한 항목만 제거 후 재등록
+    workspaces.forEach(ws => {
+      const h = _napumListeners[ws.id];
+      if (h && (h._pending || !h.ordersRef)) {
+        delete _napumListeners[ws.id];
+      }
+    });
+    attachNapumListeners().catch(e => console.warn('[납품] 재연결 실패:', e));
   }
 }
 

@@ -316,6 +316,33 @@ async function loadData() {
   // 5) 납품앱 실시간 리스너
   attachNapumListeners().catch(e => console.warn('납품 리스너 시작 실패:', e));
 
+  // 5-1) 백그라운드 복귀 / 네트워크 복구 시 리스너 재연결
+  if (!window._napumLifecycleBound) {
+    window._napumLifecycleBound = true;
+
+    // 안드로이드 백그라운드 복귀 감지
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'visible') {
+        console.info('[납품] 포그라운드 복귀 → 리스너 상태 확인');
+        setTimeout(() => _reattachNapumListenersIfNeeded(), 800);
+      }
+    });
+
+    // 네트워크 재연결 감지
+    window.addEventListener('online', () => {
+      console.info('[납품] 네트워크 복구 → 리스너 재연결 시도');
+      setTimeout(() => _reattachNapumListenersIfNeeded(), 1000);
+    });
+
+    // pageshow: iOS Safari 뒤로가기 캐시 복귀
+    window.addEventListener('pageshow', e => {
+      if (e.persisted) {
+        console.info('[납품] pageshow(캐시 복귀) → 리스너 재연결');
+        setTimeout(() => _reattachNapumListenersIfNeeded(), 800);
+      }
+    });
+  }
+
   // 6) 마이그레이션된 데이터 Firebase 반영
   if (_migrated && db) {
     try { await db.ref('transactions').set(toMap(S.transactions)); }
