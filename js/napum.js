@@ -30,6 +30,17 @@ async function _patchNapumOrder(napumKey, patchObj) {
       return true; // CRM은 이미 반영됨
     }
     await ref.update(patchObj);
+    // workspace 루트에 writtenBy + lastUpdated 기록 → 납품 앱 타임스탬프 필터 우회
+    try {
+      const wsRef = _getNapumApp().database().ref(`workspaces/${wsId}`);
+      await wsRef.update({
+        writtenBy:   'CRM_EXTERNAL',
+        lastUpdated: new Date(Date.now() + 1500).toISOString(),
+        _crmPatchAt: new Date().toISOString(),
+      });
+    } catch (e2) {
+      console.warn('납품 workspace 메타 업데이트 실패 (패치는 성공):', e2.message);
+    }
     console.info('납품 역방향 패치 성공:', napumKey, patchObj);
     return true;
   } catch (e) {
