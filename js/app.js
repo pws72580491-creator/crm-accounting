@@ -852,15 +852,32 @@ document.addEventListener('dblclick', e => {
 })();
 
 // ── INIT ──────────────────────────────────────────────────────────────────────
-window.onerror = function (msg, src, line) {
+function _showFatalError(msg) {
   hideSplash();
   const safeMsg = String(msg).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  document.getElementById('app').innerHTML = `
+  const appEl = document.getElementById('app');
+  if (appEl) appEl.innerHTML = `
     <div style="padding:40px 24px;text-align:center;color:#dc2626;">
       <div style="font-size:32px;margin-bottom:12px;">⚠️</div>
       <div style="font-weight:700;margin-bottom:8px;">앱 오류</div>
-      <div style="font-size:12px;color:#64748b;">${safeMsg}</div>
+      <div style="font-size:12px;color:#64748b;word-break:break-all;">${safeMsg}</div>
+      <button onclick="location.reload()" style="margin-top:20px;padding:10px 24px;background:#d97706;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;">새로고침</button>
     </div>`;
+}
+
+window.onerror = function (msg, src, line, col, err) {
+  console.error('[onerror]', msg, src, line);
+  _showFatalError(msg);
   return false;
 };
-(async () => { await loadData(); _initHistory(); setTimeout(updateSyncBadge, 1000); })();
+
+(async () => {
+  try {
+    await loadData();
+    _initHistory();
+    setTimeout(updateSyncBadge, 1000);
+  } catch (e) {
+    console.error('[INIT] loadData 오류:', e);
+    _showFatalError(e?.message || String(e));
+  }
+})();

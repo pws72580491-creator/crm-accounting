@@ -273,8 +273,13 @@ async function loadData() {
     console.info('[마이그레이션3] 타인거래 거래처 자동생성 포함 재동기화');
   }
 
-  try { render(); } catch (e) { console.error('render 오류:', e); }
-  finally { hideSplash(); }
+  try {
+    if (typeof render === 'function') render();
+  } catch (e) {
+    console.error('[loadData] render 오류:', e);
+  } finally {
+    hideSplash();
+  }
 
   // 2) Firebase 초기화
   await initFirebase();
