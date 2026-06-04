@@ -146,7 +146,14 @@ function statusBadge(status, txId) {
 function _fmtStatItems(o) {
   const items = o.items || [];
   if (!items.length) return o.note || '(품목 없음)';
-  return items.map(i => `${i.name}${(i.qty || 1) > 1 ? ` ×${i.qty}` : ''}`).join(', ');
+  return items.map(i => {
+    const qty   = i.qty || 1;
+    const price = i.price || i.unitPrice || 0;
+    let str = i.name;
+    if (qty > 1) str += ` ×${qty}`;
+    if (price)   str += ` @${fmtW(price)}`;
+    return str;
+  }).join(', ');
 }
 
 /** 결제 수단 탭 헬퍼 */

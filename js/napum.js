@@ -224,10 +224,11 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj) {
         if (t.id !== napumIdToCrmId[napumKey]) return t;
         const prev = JSON.stringify(t);
         const next = { ...t, status, amount, tax: 0, memo };
-        if (o.paidAmount)       next.paidAmount       = o.paidAmount; else delete next.paidAmount;
-        if (o.paidAt)           next.paidAt           = o.paidAt;
-        if (o.paidMethod)       next.paidMethod       = o.paidMethod;
-        if (o.paidMethodDetail) next.paidMethodDetail = o.paidMethodDetail; else delete next.paidMethodDetail;
+        if (o.items && o.items.length)  next.items            = o.items; else delete next.items;
+        if (o.paidAmount)               next.paidAmount       = o.paidAmount; else delete next.paidAmount;
+        if (o.paidAt)                   next.paidAt           = o.paidAt;
+        if (o.paidMethod)               next.paidMethod       = o.paidMethod;
+        if (o.paidMethodDetail)         next.paidMethodDetail = o.paidMethodDetail; else delete next.paidMethodDetail;
         if (JSON.stringify(next) !== prev) changed = true;
         return next;
       });
@@ -238,10 +239,11 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj) {
           id: nextId(S.transactions), date: o.date, clientId: crmClientId,
           type: '매출', amount, tax: 0, memo, status, _napumId: napumKey,
         };
-        if (o.paidAmount)       newT.paidAmount       = o.paidAmount;
-        if (o.paidAt)           newT.paidAt           = o.paidAt;
-        if (o.paidMethod)       newT.paidMethod       = o.paidMethod;
-        if (o.paidMethodDetail) newT.paidMethodDetail = o.paidMethodDetail;
+        if (o.items && o.items.length)  newT.items            = o.items;
+        if (o.paidAmount)               newT.paidAmount       = o.paidAmount;
+        if (o.paidAt)                   newT.paidAt           = o.paidAt;
+        if (o.paidMethod)               newT.paidMethod       = o.paidMethod;
+        if (o.paidMethodDetail)         newT.paidMethodDetail = o.paidMethodDetail;
         S.transactions = [...S.transactions, newT];
         synced.add(napumKey); changed = true;
       }
@@ -413,10 +415,11 @@ async function doSyncFromDelivery() {
                 id: nextId(S.transactions), date: o.date, clientId: crmClientId,
                 type: '매출', amount, tax: 0, memo, status, _napumId: napumKey,
               };
-              if (o.paidAmount)       newT.paidAmount       = o.paidAmount;
-              if (o.paidAt)           newT.paidAt           = o.paidAt;
-              if (o.paidMethod)       newT.paidMethod       = o.paidMethod;
-              if (o.paidMethodDetail) newT.paidMethodDetail = o.paidMethodDetail;
+              if (o.items && o.items.length)  newT.items            = o.items;
+              if (o.paidAmount)               newT.paidAmount       = o.paidAmount;
+              if (o.paidAt)                   newT.paidAt           = o.paidAt;
+              if (o.paidMethod)               newT.paidMethod       = o.paidMethod;
+              if (o.paidMethodDetail)         newT.paidMethodDetail = o.paidMethodDetail;
               S.transactions = [...S.transactions, newT];
               synced.add(napumKey); wsNewTx++; totalNewTx++;
             }
