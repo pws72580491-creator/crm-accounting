@@ -488,7 +488,62 @@ async function _loadStatOrders() {
   }
 }
 
-// ── 동기화 모달 빌드 ──────────────────────────────────────────────────────────
+// ── 납품 명세표 공유 ──────────────────────────────────────────────────────────
+function shareStatModal(type) {
+  const sm = M.statModal;
+  if (!sm || sm.step !== 'done') return;
+  const { clientName, month, orders } = sm;
+
+  const cl = S.clients.find(c => c.name === clientName);
+  const phone = (cl?.phone || '').replace(/[^0-9]/g, '');
+
+  const monthStart  = month + '-01';
+  const filt        = orders.filter(o => o.date && o.date.startsWith(month));
+  const carryOrders = orders.filter(o => o.date && o.date < monthStart && !o.isPaid);
+  const _eff  = o => o.isPaid && (o.discount || 0) > 0 ? o.total - o.discount : o.total;
+  const _paid = o => o.isPaid ? (o.paidAmount || o.total) : (o.paidAmount || 0);
+  const carryAmt    = carryOrders.reduce((s, o) => s + (o.total - (o.paidAmount || 0)), 0);
+  const monthTotal  = filt.reduce((s, o) => s + _eff(o), 0);
+  const monthPaid   = filt.reduce((s, o) => s + _paid(o), 0);
+  const monthUnpaid = monthTotal - monthPaid;
+  const grandUnpaid = carryAmt + monthUnpaid;
+
+  const lines = [];
+  lines.push(`📋 ${clientName} 거래명세표`);
+  lines.push(`📅 ${fmtMonth(month)}`);
+  lines.push('');
+  if (carryAmt > 0)
+    lines.push(`⏩ 전월 이월: ${fmtW(carryAmt)}`);
+  lines.push(`📦 당월 매출: ${fmtW(monthTotal)}`);
+  lines.push(`💳 수금액:   ${fmtW(monthPaid)}`);
+  lines.push(`🧾 청구 금액: ${fmtW(grandUnpaid)}`);
+  lines.push('');
+  lines.push('🏦 입금 계좌');
+  lines.push('농협 916-02-055664');
+  lines.push('예금주: 이애경');
+
+  const text = lines.join('\n');
+
+  if (type === 'sms') {
+    // SMS: sms:번호?body=내용
+    const encoded = encodeURIComponent(text);
+    const uri = phone ? `sms:${phone}?body=${encoded}` : `sms:?body=${encoded}`;
+    window.location.href = uri;
+  } else if (type === 'kakao') {
+    // 카카오: 전화번호 없어도 클립보드 복사 후 안내
+    if (navigator.share) {
+      navigator.share({ title: `${clientName} 거래명세표`, text }).catch(() => {});
+    } else {
+      navigator.clipboard?.writeText(text).then(() => {
+        alert('내용이 클립보드에 복사됐습니다.\n카카오톡을 열어 붙여넣기 해주세요.');
+      }).catch(() => {
+        alert('공유가 지원되지 않는 환경입니다.\n직접 복사 후 전송해주세요.');
+      });
+    }
+  }
+}
+
+
 function buildSyncModal() {
   const sm         = M.syncModal;
   const workspaces = _getWorkspaces();
@@ -751,7 +806,16 @@ function buildStatModal() {
             <div style="color:#94a3b8;font-size:11px;margin-top:1px;">납품 거래명세표</div>
           </div>
           <div style="display:flex;align-items:center;gap:8px;">
-            ${step === 'done' ? monthSel : ''}
+            ${step === 'done' ? `
+              <button onclick="shareStatModal('sms')" title="문자 전송"
+                style="display:flex;align-items:center;gap:4px;background:#16a34a;color:#fff;border:none;border-radius:8px;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer;">
+                💬 문자
+              </button>
+              <button onclick="shareStatModal('kakao')" title="카카오톡/공유"
+                style="display:flex;align-items:center;gap:4px;background:#f9e000;color:#3c1e1e;border:none;border-radius:8px;padding:6px 10px;font-size:12px;font-weight:600;cursor:pointer;">
+                🟡 카톡
+              </button>
+              ${monthSel}` : ''}
             <button onclick="closeStatModal()" style="background:none;border:none;cursor:pointer;color:#94a3b8;">${I.x}</button>
           </div>
         </div>
