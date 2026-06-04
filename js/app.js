@@ -610,6 +610,16 @@ function renderModals() {
 }
 
 // ── HANDLERS ─────────────────────────────────────────────────────────────────
+function goToClientTx(clientId, isSales) {
+  const cl = S.clients.find(c => c.id === clientId);
+  S.txSearch      = cl ? cl.name : '';
+  S.txTf          = '전체';
+  S.txSf          = isSales ? '미수금' : '미지급금';
+  S.txPeriodMode  = 'all';
+  S.txMonth       = '전체';
+  S.view          = 'transactions';
+  render();
+}
 function setView(v) { S.view = v; render(); }
 
 function setCSearch(v) {

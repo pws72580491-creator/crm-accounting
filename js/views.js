@@ -762,7 +762,7 @@ function _buildRcvSections() {
       const urgColor   = daysOldest>=60?'#dc2626':daysOldest>=30?'#b45309':'#64748b';
       const urgBg      = daysOldest>=60?'#fee2e2':daysOldest>=30?'#fef3c7':'#f1f5f9';
       return `
-        <div onclick="S.txSearch='';S.txTf='전체';S.txSf='전체';S.txPeriodMode='all';S.txMonth='전체';S.view='transactions';render()" class="hover-row" style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid #f1f5f9;gap:10px;cursor:pointer;">
+        <div onclick="goToClientTx(${g.clientId},${isSales?1:0})" class="hover-row" style="display:flex;align-items:center;padding:12px 16px;border-bottom:1px solid #f1f5f9;gap:10px;cursor:pointer;">
           <div style="flex:1;min-width:0;">
             <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
               <span style="font-weight:700;color:#0f172a;font-size:13px;">${esc(cl?.name||'?')}</span>
