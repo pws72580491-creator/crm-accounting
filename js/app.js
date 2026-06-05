@@ -634,7 +634,7 @@ function _pinHash(pin) {
 }
 function hasDashPin()    { return !!localStorage.getItem(PIN_KEY); }
 function checkDashPin(p) { return localStorage.getItem(PIN_KEY) === _pinHash(p); }
-function saveDashPin(p)  { localStorage.setItem(PIN_KEY, _pinHash(p)); _stampPinAuth(); }
+function saveDashPin(p)  { localStorage.setItem(PIN_KEY, _pinHash(p)); localStorage.setItem(PIN_TS_KEY, '0'); }
 function clearDashPin()  { localStorage.removeItem(PIN_KEY); localStorage.removeItem(PIN_TS_KEY); S.dashLocked = false; }
 function _stampPinAuth() { localStorage.setItem(PIN_TS_KEY, Date.now().toString()); }
 function _isPinExpired() {
@@ -646,6 +646,7 @@ function _isPinExpired() {
 function checkDashLock() {
   if (!hasDashPin()) { S.dashLocked = false; return; }
   if (_isPinExpired()) S.dashLocked = true;
+  // 만료 안됐으면 기존 dashLocked 상태 유지 (한번 잠기면 명시적 해제 전까지 유지)
 }
 
 // PIN 모달 상태
@@ -1045,6 +1046,8 @@ window.onerror = function (msg, src, line, col, err) {
 
 (async () => {
   try {
+    // PIN이 설정되어 있으면 앱 시작 시 무조건 잠금
+    if (hasDashPin()) S.dashLocked = true;
     await loadData();
     _initHistory();
     setTimeout(updateSyncBadge, 1000);
