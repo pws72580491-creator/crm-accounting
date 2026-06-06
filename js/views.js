@@ -254,7 +254,7 @@ function _buildCRows() {
   const wsOrder = {};
   workspaces.forEach((w, i) => { wsOrder[w.id] = i; });
 
-  const filtered = S.clients.filter(c => {
+  let filtered = S.clients.filter(c => {
     const wsId = clientWsId(c.id);
     const wsOk = S.cWsFilter === '전체'
       || (S.cWsFilter === '__direct__' && wsId === null)
