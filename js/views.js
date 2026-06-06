@@ -279,6 +279,11 @@ function _buildCRows() {
     return { txs, unpaid };
   };
 
+  // ★ 그룹 필터 적용
+  if (S.cGroupFilter && S.cGroupFilter !== '전체') {
+    filtered = filtered.filter(c => (c._napumGroup || '') === S.cGroupFilter);
+  }
+
   let lastWsGroup = undefined;
   return filtered.map(c => {
     const s     = clientStats(c.id);
@@ -299,7 +304,7 @@ function _buildCRows() {
 
     let expHtml = '';
     if (open) {
-      const info = [['사업자번호',c.bizNo],['대표자',c.rep],['전화',c.phone],['이메일',c.email],['주소',c.address],['메모',c.memo]]
+      const info = [['그룹',c._napumGroup],['사업자번호',c.bizNo],['대표자',c.rep],['전화',c.phone],['이메일',c.email],['주소',c.address],['메모',c.memo]]
         .filter(([, v]) => v)
         .map(([k, v]) => `<div style="display:flex;gap:8px;"><span style="color:#94a3b8;min-width:60px;font-size:12px;">${esc(k)}</span><span style="color:#334155;font-size:12px;word-break:break-all;">${esc(v)}</span></div>`)
         .join('');
@@ -321,7 +326,10 @@ function _buildCRows() {
             <span style="color:${open?'#d97706':'#0f172a'};font-size:13px;font-weight:500;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${esc(c.name)}</span>
             <span style="color:#94a3b8;flex-shrink:0;">${open ? I.chevD : I.chevR}</span>
           </div>
-          <div style="color:#94a3b8;font-size:11px;margin-top:1px;"><span style="font-size:10px;font-weight:600;color:${tc};">${esc(c.type)}</span></div>
+          <div style="color:#94a3b8;font-size:11px;margin-top:1px;display:flex;align-items:center;gap:5px;">
+            <span style="font-size:10px;font-weight:600;color:${tc};">${esc(c.type)}</span>
+            ${c._napumGroup ? `<span style="font-size:10px;font-weight:600;color:#7c3aed;background:#f5f3ff;border:1px solid #ddd6fe;border-radius:4px;padding:1px 5px;">👥 ${esc(c._napumGroup)}</span>` : ''}
+          </div>
         </div>
         <div style="text-align:right;flex-shrink:0;">${unpaidBadge}</div>
         <div style="width:52px;display:flex;justify-content:center;gap:8px;flex-shrink:0;" onclick="event.stopPropagation()">
@@ -350,6 +358,15 @@ function buildClients() {
     const a = S.cFilter === t;
     return `<button onclick="setCFilter('${t}')" style="padding:7px 11px;border-radius:8px;font-size:12px;font-weight:${a?700:400};background:${a?'#d97706':'#f8fafc'};color:${a?'#fff':'#64748b'};border:1px solid ${a?'#d97706':'#e2e8f0'};cursor:pointer;">${esc(t)}</button>`;
   }).join('');
+
+  // ★ v89 납품 앱 그룹 필터 버튼
+  const napumGroups = [...new Set(S.clients.map(c => c._napumGroup).filter(Boolean))].sort();
+  const groupFilterBtns = napumGroups.length > 0
+    ? ['전체', ...napumGroups].map(g => {
+        const a = (S.cGroupFilter || '전체') === g;
+        return `<button onclick="setCGroupFilter('${esc(g)}')" style="padding:5px 10px;border-radius:8px;font-size:11px;font-weight:${a?700:500};background:${a?'#7c3aed':'#f5f3ff'};color:${a?'#fff':'#7c3aed'};border:1px solid ${a?'#7c3aed':'#ddd6fe'};cursor:pointer;white-space:nowrap;">👥 ${esc(g)}</button>`;
+      }).join('')
+    : '';
 
   const hasDirectClients = S.clients.some(c => clientWsId(c.id) === null);
   const wsFilterOptions  = [
@@ -391,6 +408,7 @@ function buildClients() {
         <div style="display:flex;gap:4px;flex-wrap:wrap;">${filterBtns}</div>
       </div>
       ${wsBtns ? `<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;"><span style="font-size:11px;color:#94a3b8;white-space:nowrap;flex-shrink:0;">거래처:</span>${wsBtns}</div>` : ''}
+      ${groupFilterBtns ? `<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;"><span style="font-size:11px;color:#94a3b8;white-space:nowrap;flex-shrink:0;">그룹:</span>${groupFilterBtns}</div>` : ''}
       <div style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;overflow:hidden;">
         <div style="display:flex;padding:9px 14px;background:#f8fafc;border-bottom:1px solid #e2e8f0;gap:8px;">
           <span style="flex:1;color:#94a3b8;font-size:11px;font-weight:500;">거래처명</span>

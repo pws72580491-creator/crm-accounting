@@ -2,7 +2,7 @@
 let S = {
   view: 'dashboard',
   // 거래처
-  clients: [], cSearch: '', cFilter: '전체', cWsFilter: '전체', cExpanded: null,
+  clients: [], cSearch: '', cFilter: '전체', cWsFilter: '전체', cGroupFilter: '전체', cExpanded: null, // ★ v89 납품 그룹 필터
   // 거래
   transactions: [], txSearch: '', txTf: '전체', txSf: '전체', txWsFilter: '전체',
   txMonth: null, txPeriodMode: 'daily', txDate: null, txWeek: null,

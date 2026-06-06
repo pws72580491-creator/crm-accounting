@@ -180,6 +180,7 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj) {
         phone: nc.phone || '', address: nc.address || '', type: '매출처',
         memo: `[${ws.label}]${nc.note ? ' ' + nc.note : ''}`,
         _wsId: ws.id,
+        _napumGroup: nc.group || '',  // ★ v89 그룹 필드 수신
       };
       S.clients = [...S.clients, newC];
       nameToId[nc.name] = newC.id; changed = true;
@@ -192,6 +193,7 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj) {
         if (nc.phone   && !c.phone)   next.phone   = nc.phone;
         if (nc.address && !c.address) next.address = nc.address;
         if (!c._wsId) next._wsId = ws.id;
+        if (nc.group  !== undefined)  next._napumGroup = nc.group || '';  // ★ 그룹 업데이트
         if (JSON.stringify(next) !== prev) { changed = true; return next; }
         return c;
       });
@@ -362,6 +364,7 @@ async function doSyncFromDelivery() {
               phone: nc.phone || '', address: nc.address || '', type: '매출처',
               memo: `[${ws.label}]${nc.note ? ' ' + nc.note : ''}`,
               _wsId: ws.id,
+              _napumGroup: nc.group || '',  // ★ v89 그룹 필드 수신
             };
             S.clients = [...S.clients, newC];
             nameToId[nc.name] = newC.id; wsNewClients++; totalNewClients++;
@@ -373,6 +376,7 @@ async function doSyncFromDelivery() {
               if (nc.phone   && !c.phone)   next.phone   = nc.phone;
               if (nc.address && !c.address) next.address = nc.address;
               if (!c._wsId) next._wsId = ws.id;
+              if (nc.group  !== undefined)  next._napumGroup = nc.group || '';  // ★ 그룹 업데이트
               return next;
             });
           }
