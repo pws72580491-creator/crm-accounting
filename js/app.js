@@ -126,20 +126,30 @@ function buildClientModal() {
 function buildTxModal() {
   const m   = M.txModal;
   const isEd = m !== 'add' && typeof m === 'object';
-  const f   = isEd ? m : { date:today(), clientId:S.clients[0]?.id||1, type:'매출', amount:'', tax:'', memo:'', status:'미수금' };
+  const f   = isEd ? m : { date:today(), clientId:S.clients[0]?.id||1, type:'매출', amount:'', tax:'', taxType:'taxable', memo:'', status:'미수금' };
+  if (!f.taxType) f.taxType = (f.tax === 0 && f.amount > 0) ? 'exempt' : 'taxable';
   const initClientName = isEd ? (S.clients.find(c => c.id === f.clientId)?.name || '') : '';
   const clientOpts = S.clients.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
   const stOpts     = (f.type === '매출' ? ['미수금','수금완료'] : ['미지급금','지급완료']).map(s => `<option ${s === f.status ? 'selected' : ''}>${esc(s)}</option>`).join('');
+  const isTaxable  = f.taxType !== 'exempt';
+  const taxAmt     = isTaxable ? (+f.tax || 0) : 0;
   const preview    = f.amount > 0
-    ? `<div id="txTotal" style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 14px;margin-top:12px;display:flex;justify-content:space-between;align-items:center;"><span style="color:#16a34a;font-size:12px;">합계 금액</span><span style="color:#16a34a;font-weight:700;font-size:16px;">${fmtW((+f.amount||0)+(+f.tax||0))}</span></div>`
+    ? `<div id="txTotal" style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 14px;margin-top:12px;display:flex;justify-content:space-between;align-items:center;"><span style="color:#16a34a;font-size:12px;">합계 금액</span><span style="color:#16a34a;font-weight:700;font-size:16px;">${fmtW((+f.amount||0)+taxAmt)}</span></div>`
     : `<div id="txTotal"></div>`;
+  const taxToggle = `
+    <div style="display:flex;gap:0;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-top:4px;">
+      <button id="tt_taxable" onclick="onTxTaxType('taxable')" style="flex:1;padding:8px 0;font-size:12px;font-weight:600;border:none;cursor:pointer;transition:all .15s;background:${isTaxable?'#d97706':'#f8fafc'};color:${isTaxable?'#fff':'#94a3b8'};">과세 (10%)</button>
+      <button id="tt_exempt"  onclick="onTxTaxType('exempt')"  style="flex:1;padding:8px 0;font-size:12px;font-weight:600;border:none;cursor:pointer;transition:all .15s;background:${!isTaxable?'#0369a1':'#f8fafc'};color:${!isTaxable?'#fff':'#94a3b8'};">비과세</button>
+    </div>`;
   const content = `
+    <input type="hidden" id="tf_taxType" value="${isTaxable?'taxable':'exempt'}">
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
       <div><label style="font-size:12px;color:#64748b;">거래일자<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><input id="tf_date" type="date" value="${esc(f.date)}" max="${localDate()}" style="${ISX}"></div></div>
       <div><label style="font-size:12px;color:#64748b;">구분<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><select id="tf_type" onchange="onTxType(this.value)" style="${ISX}"><option ${f.type==='매출'?'selected':''}>매출</option><option ${f.type==='매입'?'selected':''}>매입</option></select></div></div>
       <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">거래처<span style="color:#dc2626">*</span></label><div style="margin-top:4px;position:relative;"><input id="tf_clientName" list="tf_clientList" value="${esc(initClientName)}" placeholder="거래처명 입력 또는 선택…" autocomplete="off" oninput="_onTxClientInput(this.value)" onkeydown="if(event.key==='Enter'||event.keyCode===13){this.blur();}" style="${ISX}"><datalist id="tf_clientList">${clientOpts}</datalist><input type="hidden" id="tf_clientId" value="${isEd?f.clientId:''}"></div></div>
+      <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">과세 여부</label>${taxToggle}</div>
       <div><label style="font-size:12px;color:#64748b;">공급가액<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><input id="tf_amount" value="${f.amount?fmt(f.amount):''}" oninput="applyAmtFmt(this);onTxAmt(this.value)" placeholder="0" style="${ISX}" ${FB}></div></div>
-      <div><label style="font-size:12px;color:#64748b;">세액 (자동계산)</label><div style="margin-top:4px;"><input id="tf_tax" value="${f.tax?fmt(f.tax):''}" oninput="applyAmtFmt(this);onTxTax(this.value)" placeholder="0" style="${ISX}" ${FB}></div></div>
+      <div><label style="font-size:12px;color:#64748b;">세액${isTaxable?' (자동계산)':' (비과세)'}</label><div style="margin-top:4px;"><input id="tf_tax" value="${isTaxable&&f.tax?fmt(f.tax):''}" oninput="applyAmtFmt(this);onTxTax(this.value)" placeholder="0" style="${ISX};${!isTaxable?'background:#f1f5f9;color:#94a3b8;':''}" ${!isTaxable?'disabled':''} ${FB}></div></div>
       <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">적요</label><div style="margin-top:4px;"><input id="tf_memo" value="${esc(f.memo||'')}" placeholder="거래 내용" style="${ISX}" ${FB}></div></div>
       <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">상태</label><div style="margin-top:4px;"><select id="tf_status" style="${ISX}">${stOpts}</select></div></div>
     </div>
@@ -877,13 +887,15 @@ function submitTxModal(existId) {
     }
   }
   const _origTx = existId !== null ? S.transactions.find(t => t.id === existId) : null;
+  const taxType = document.getElementById('tf_taxType')?.value || 'taxable';
   const f = {
     ...(_origTx || {}),
     date: dateVal, clientId,
-    type:   document.getElementById('tf_type')?.value,
-    amount, tax,
-    memo:   document.getElementById('tf_memo')?.value   || '',
-    status: document.getElementById('tf_status')?.value,
+    type:    document.getElementById('tf_type')?.value,
+    amount, tax: taxType === 'exempt' ? 0 : tax,
+    taxType,
+    memo:    document.getElementById('tf_memo')?.value   || '',
+    status:  document.getElementById('tf_status')?.value,
   };
   if (existId !== null) f.id = existId;
   saveTxFn(f);
@@ -894,8 +906,39 @@ function confirmDelTx(id) {
   M.txModal = null; _pushModalHistory(); renderModals();
 }
 
+function onTxTaxType(type) {
+  const hidEl = document.getElementById('tf_taxType');
+  if (hidEl) hidEl.value = type;
+  const taxEl  = document.getElementById('tf_tax');
+  const lblEl  = taxEl?.previousElementSibling || taxEl?.parentElement?.previousElementSibling;
+  const btnTax = document.getElementById('tt_taxable');
+  const btnExe = document.getElementById('tt_exempt');
+  if (type === 'exempt') {
+    if (taxEl) { taxEl.value = ''; taxEl.disabled = true; taxEl.style.background = '#f1f5f9'; taxEl.style.color = '#94a3b8'; }
+    if (btnTax) { btnTax.style.background = '#f8fafc'; btnTax.style.color = '#94a3b8'; }
+    if (btnExe) { btnExe.style.background = '#0369a1'; btnExe.style.color = '#fff'; }
+    // 세액 라벨 업데이트
+    const label = taxEl?.closest('div')?.previousElementSibling;
+    if (label?.tagName === 'LABEL') label.textContent = '세액 (비과세)';
+    const amt = parseInt((document.getElementById('tf_amount')?.value || '').replace(/[^0-9]/g, '')) || 0;
+    updateTxTotal(amt, 0);
+  } else {
+    if (taxEl) { taxEl.disabled = false; taxEl.style.background = ''; taxEl.style.color = ''; }
+    if (btnTax) { btnTax.style.background = '#d97706'; btnTax.style.color = '#fff'; }
+    if (btnExe) { btnExe.style.background = '#f8fafc'; btnExe.style.color = '#94a3b8'; }
+    const label = taxEl?.closest('div')?.previousElementSibling;
+    if (label?.tagName === 'LABEL') label.textContent = '세액 (자동계산)';
+    const amt = parseInt((document.getElementById('tf_amount')?.value || '').replace(/[^0-9]/g, '')) || 0;
+    onTxAmt(String(amt));
+  }
+}
 function onTxAmt(val) {
-  const n   = parseInt(val.replace(/[^0-9]/g, '')) || 0;
+  const n        = parseInt(val.replace(/[^0-9]/g, '')) || 0;
+  const taxType  = document.getElementById('tf_taxType')?.value || 'taxable';
+  if (taxType === 'exempt') {
+    updateTxTotal(n, 0);
+    return;
+  }
   const tax = Math.round(n * 0.1);
   const tf  = document.getElementById('tf_tax'); if (tf) tf.value = tax ? fmt(tax) : '';
   updateTxTotal(n, tax);

@@ -51,11 +51,12 @@ async function _patchNapumOrder(napumKey, patchObj) {
 
 function _buildNapumPatch(crmTx) {
   const patch = {
-    isPaid:     crmTx.status === '수금완료',
-    paidAmount: crmTx.paidAmount || 0,
-    paidAt:     crmTx.paidAt || new Date().toISOString(),
-    paidMethod: crmTx.paidMethod || 'cash',
-    updatedAt:  new Date().toISOString(),
+    isPaid:        crmTx.status === '수금완료',
+    paidAmount:    crmTx.paidAmount || 0,
+    paidAt:        crmTx.paidAt || new Date().toISOString(),
+    paidMethod:    crmTx.paidMethod || 'cash',
+    updatedAt:     new Date().toISOString(),
+    crmControlled: true,  // ★ CRM 우선권 플래그 — 납품 앱이 이 필드들을 덮어쓰지 않음
   };
   if (crmTx.paidMethodDetail) patch.paidMethodDetail = crmTx.paidMethodDetail;
   return patch;
