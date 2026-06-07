@@ -150,9 +150,28 @@ function _attachListeners() {
   }, e => console.warn('clients 리스너:', e));
 
   _offTX = db.ref('transactions').on('value', snap => {
-    const arr = toArr(snap.val());
-    if (JSON.stringify(arr) === JSON.stringify(S.transactions)) return;
-    S.transactions = arr; lsSet('crm_tx', S.transactions); render();
+    const incoming = toArr(snap.val());
+    // dlControlled 플래그가 있는 거래는 거래장이 마지막으로 결제 처리한 것
+    // → CRM 로컬 값과 병합 시 결제 필드를 서버 값으로 우선 반영
+    const merged = incoming.map(inTx => {
+      if (!inTx.dlControlled) return inTx;
+      // 기존 로컬 거래에서 dlControlled가 없던 것이면 서버값 그대로 사용
+      const local = S.transactions.find(t => t.id === inTx.id);
+      if (!local || local.dlControlled) return inTx;
+      // 로컬에 있었지만 거래장이 결제 처리 → 결제 필드만 서버로 덮어씀
+      return {
+        ...local,
+        status:            inTx.status,
+        paidAmount:        inTx.paidAmount,
+        paidAt:            inTx.paidAt,
+        paidMethod:        inTx.paidMethod,
+        paidMethodDetail:  inTx.paidMethodDetail,
+        discount:          inTx.discount,
+        dlControlled:      true,
+      };
+    });
+    if (JSON.stringify(merged) === JSON.stringify(S.transactions)) return;
+    S.transactions = merged; lsSet('crm_tx', S.transactions); render();
   }, e => console.warn('transactions 리스너:', e));
 }
 
@@ -203,6 +222,7 @@ function toggleStatus(txId) {
       delete u.paidAmount; delete u.paidAt;
       delete u.paidMethod; delete u.paidMethodDetail;
     }
+    delete u.dlControlled; // CRM이 직접 처리 → 거래장 우선권 해제
     updatedTx = u; return u;
   });
   if (updatedTx) _saveOneTx(updatedTx); else saveTX();
@@ -223,6 +243,7 @@ function completeStatus(txId, status) {
       u.paidAt     = new Date().toISOString();
       u.paidMethod = u.paidMethod || 'cash';
     }
+    delete u.dlControlled; // CRM이 직접 처리 → 거래장 우선권 해제
     updatedTx = u; return u;
   });
   if (updatedTx) _saveOneTx(updatedTx); else saveTX();

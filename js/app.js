@@ -428,6 +428,7 @@ function confirmQuickPay() {
     const next = { ...tx, paidAmount: already + amt, paidAt, paidMethod: mo.method };
     if (paidMethodDetail) next.paidMethodDetail = paidMethodDetail;
     if (isFull) next.status = tx.status === '미수금' ? '수금완료' : '지급완료';
+    delete next.dlControlled; // CRM이 직접 처리 → 거래장 우선권 해제
     updatedTx = next; return next;
   });
   if (updatedTx) _saveOneTx(updatedTx); else saveTX();

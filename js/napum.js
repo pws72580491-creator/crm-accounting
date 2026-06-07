@@ -105,10 +105,24 @@ async function attachNapumListeners() {
         clientsRef.on('value', clientsCb, e => console.warn('납품 clients 리스너:', e));
 
         // clients 준비 완료 후 orders 리스너 등록
+        // ── sharedClients 캐시: 이 워크스페이스가 외부에 공개한 거래처 목록 ──
+        let _sharedClientsCache = null; // null = 아직 미로드, [] = 공개 없음
+        const sharedClientsRef = wsRef.child('sharedClients');
+        // 초기 1회 로드
+        sharedClientsRef.once('value').then(sc => {
+          _sharedClientsCache = sc.exists() ? (sc.val() || []) : [];
+        }).catch(() => { _sharedClientsCache = []; });
+        // 이후 실시간 변경 반영
+        sharedClientsRef.on('value', sc => {
+          _sharedClientsCache = sc.exists() ? (sc.val() || []) : [];
+        }, e => console.warn('납품 sharedClients 리스너:', e));
+
         const ordersRef = wsRef.child('orders');
         const ordersCb  = snap => {
           if (!_clientsReady) return; // 방어 (사실상 항상 true)
-          _processNapumOrdersSnapshot(ws, snap.val() || {}, _napumClientsCache);
+          // sharedClients 미로드 시 빈 배열로 처리 (공개 없음)
+          const allowed = _sharedClientsCache || [];
+          _processNapumOrdersSnapshot(ws, snap.val() || {}, _napumClientsCache, allowed);
         };
         ordersRef.on('value', ordersCb, e => console.warn('납품 orders 리스너:', e));
 
@@ -156,10 +170,28 @@ function detachNapumListeners() {
   }
 }
 
-/** 납품앱 orders 스냅샷을 받아 CRM에 반영 */
-function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj) {
-  const orders       = Object.values(ordersObj);
-  const napumClients = Object.values(napumClientsObj);
+/** 납품앱 orders 스냅샷을 받아 CRM에 반영
+ *  allowed: 이 워크스페이스가 공개 허용한 거래처명 배열 (빈 배열 = 공개 없음)
+ */
+function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = []) {
+  // allowed가 비어있으면 이 워크스페이스는 아무것도 공개하지 않은 것
+  // → 단, CRM에 직접 등록한 워크스페이스(자기 자신)는 필터 없이 전체 허용
+  const isSelfWs = _getWorkspaces().some(w => w.id === ws.id);
+  const useFilter = !isSelfWs || allowed.length > 0;
+  const allowedSet = new Set(allowed);
+
+  const orders       = Object.values(ordersObj)
+    .filter(o => {
+      if (!useFilter) return true;           // 자기 워크스페이스 + 공개 없음 = 전체 허용
+      if (!isSelfWs && allowed.length === 0) return false; // 외부 ws + 공개 없음 = 전부 차단
+      return allowedSet.has(o.clientName);   // 허용된 거래처만
+    });
+  const napumClients = Object.values(napumClientsObj)
+    .filter(nc => {
+      if (!useFilter) return true;
+      if (!isSelfWs && allowed.length === 0) return false;
+      return allowedSet.has(nc.name);
+    });
   // napumClient id → 객체 맵
   const napumClientById = {};
   napumClients.forEach(nc => { if (nc.id != null) napumClientById[String(nc.id)] = nc; });
@@ -180,7 +212,6 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj) {
         phone: nc.phone || '', address: nc.address || '', type: '매출처',
         memo: `[${ws.label}]${nc.note ? ' ' + nc.note : ''}`,
         _wsId: ws.id,
-        _napumGroup: nc.group || '',  // ★ v89 그룹 필드 수신
       };
       S.clients = [...S.clients, newC];
       nameToId[nc.name] = newC.id; changed = true;
@@ -193,7 +224,6 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj) {
         if (nc.phone   && !c.phone)   next.phone   = nc.phone;
         if (nc.address && !c.address) next.address = nc.address;
         if (!c._wsId) next._wsId = ws.id;
-        if (nc.group  !== undefined)  next._napumGroup = nc.group || '';  // ★ 그룹 업데이트
         if (JSON.stringify(next) !== prev) { changed = true; return next; }
         return c;
       });
@@ -281,8 +311,40 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj) {
 }
 
 // ── 동기화 모달 ───────────────────────────────────────────────────────────────
-function openSyncModal()  { M.syncModal = { step:'idle', newInput:'', newLabel:'', result:null, error:null, progress:null }; _pushModalHistory(); renderModals(); }
+function openSyncModal()  {
+  M.syncModal = { step:'idle', newInput:'', newLabel:'', result:null, error:null, progress:null };
+  _pushModalHistory();
+  renderModals();
+  // Firebase 준비되면 공개 거래처 뱃지 로드
+  if (typeof firebase !== 'undefined') setTimeout(_loadScBadges, 300);
+}
 function closeSyncModal() { M.syncModal = null; renderModals(); }
+
+// 동기화 모달 내 각 워크스페이스의 공개 거래처 뱃지 비동기 로드
+async function _loadScBadges() {
+  const workspaces = _getWorkspaces();
+  if (!workspaces.length || typeof firebase === 'undefined') return;
+  const napumDb = _getNapumApp().database();
+  workspaces.forEach(async w => {
+    const el = document.getElementById(`scBadge_${w.id}`);
+    if (!el) return;
+    try {
+      const snap = await napumDb.ref(`workspaces/${w.id}/sharedClients`).get();
+      const list = snap.exists() ? (snap.val() || []) : [];
+      if (!list.length) {
+        el.textContent = '⚠️ 공개 거래처 없음 (납품앱에서 설정 필요)';
+        el.style.color = '#f59e0b';
+      } else {
+        el.innerHTML = '🔓 공개: ' + list.map(n =>
+          `<span style="background:#e0e7ff;color:#4f46e5;border-radius:4px;padding:1px 5px;font-size:10px;margin-right:2px;">${esc(n)}</span>`
+        ).join('');
+      }
+    } catch(e) {
+      el.textContent = '❌ 접근 불가';
+      el.style.color = '#dc2626';
+    }
+  });
+}
 
 function syncAddWorkspace() {
   const sm = M.syncModal;
@@ -336,10 +398,18 @@ async function doSyncFromDelivery() {
       let wsNewClients = 0, wsNewTx = 0, wsUpdTx = 0;
       try {
         const wsRef = napumDb.ref('workspaces/' + ws.id);
-        const [csSnap, ordSnap] = await Promise.all([
+        const [csSnap, ordSnap, scSnap] = await Promise.all([
           wsRef.child('clients').get(),
           wsRef.child('orders').get(),
+          wsRef.child('sharedClients').get(),
         ]);
+
+        // 이 워크스페이스가 공개 허용한 거래처 목록
+        const allowedClients = scSnap.exists() ? (scSnap.val() || []) : [];
+        const allowedSet     = new Set(allowedClients);
+        // CRM에 직접 등록한 자기 워크스페이스는 전체 허용, 공유로 받은 ws는 필터 적용
+        const isSelfWs   = true; // doSync는 항상 자기가 등록한 ws만 처리
+        const useFilter  = allowedClients.length > 0;
 
         if (!csSnap.exists() && !ordSnap.exists()) {
           perWorkspace.push({ ...ws, error:true, newTx:0 });
@@ -348,8 +418,10 @@ async function doSyncFromDelivery() {
         }
 
         const napumClientsRaw = csSnap.val() || {};
-        const napumClients    = Object.values(napumClientsRaw);
-        const napumOrders     = Object.values(ordSnap.val() || {});
+        const napumClients    = Object.values(napumClientsRaw)
+          .filter(nc => !useFilter || allowedSet.has(nc.name));
+        const napumOrders     = Object.values(ordSnap.val() || {})
+          .filter(o  => !useFilter || allowedSet.has(o.clientName));
 
         // napumClient id → 객체 맵 (order.clientId 매핑용)
         const napumClientById = {};
@@ -364,7 +436,6 @@ async function doSyncFromDelivery() {
               phone: nc.phone || '', address: nc.address || '', type: '매출처',
               memo: `[${ws.label}]${nc.note ? ' ' + nc.note : ''}`,
               _wsId: ws.id,
-              _napumGroup: nc.group || '',  // ★ v89 그룹 필드 수신
             };
             S.clients = [...S.clients, newC];
             nameToId[nc.name] = newC.id; wsNewClients++; totalNewClients++;
@@ -376,8 +447,7 @@ async function doSyncFromDelivery() {
               if (nc.phone   && !c.phone)   next.phone   = nc.phone;
               if (nc.address && !c.address) next.address = nc.address;
               if (!c._wsId) next._wsId = ws.id;
-              if (nc.group  !== undefined)  next._napumGroup = nc.group || '';  // ★ 그룹 업데이트
-              return next;
+                    return next;
             });
           }
         });
@@ -518,6 +588,12 @@ async function _loadStatOrders() {
 
     await Promise.all(workspaces.map(async ws => {
       try {
+        // 1) 이 워크스페이스가 공개 허용한 거래처 확인
+        const scSnap       = await napumDb.ref(`workspaces/${ws.id}/sharedClients`).get();
+        const allowedNames = scSnap.exists() ? (scSnap.val() || []) : [];
+        // 공개 목록이 있고, 현재 조회 거래처가 허용 목록에 없으면 스킵
+        if (allowedNames.length > 0 && !allowedNames.includes(sm.clientName)) return;
+
         const snap   = await napumDb.ref(`workspaces/${ws.id}/orders`).get();
         const orders = Object.values(snap.val() || {});
         orders.forEach(o => {
@@ -605,6 +681,7 @@ function buildSyncModal() {
           <div style="flex:1;min-width:0;">
             <div style="font-size:13px;font-weight:600;color:#0f172a;">${esc(w.label)}</div>
             <div style="font-size:10px;color:#94a3b8;letter-spacing:.5px;">${esc(w.id)}${w.lastSync ? ` · ${esc(w.lastSync)}` : ''}</div>
+            <div id="scBadge_${esc(w.id)}" style="font-size:10px;color:#6366f1;margin-top:2px;"></div>
           </div>
           ${w.lastSync ? `<span style="font-size:10px;background:#dcfce7;color:#16a34a;padding:2px 6px;border-radius:9999px;font-weight:600;">${w.syncedCount}건</span>` : ''}
           <button onclick="syncRemoveWorkspace('${esc(w.id)}')" style="background:none;border:none;cursor:pointer;color:#fca5a5;padding:2px;" title="삭제">${I.trash}</button>
