@@ -49,7 +49,7 @@ const NAPUM_FB_CFG = {
 
 // ── Gemini API Key (AI 영수증 분석) ──────────────────────────────────────────
 // https://aistudio.google.com/apikey 에서 발급
-const GEMINI_API_KEY = 'AQ.Ab8RN6K66sfTIi2_fWeVtYBzf06fTodVNST_RMcpdcWbwPJxVg';
+const OPENROUTER_API_KEY = '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';
 
 // ── Nav Items ─────────────────────────────────────────────────────────────────
 const NAV = [
