@@ -194,15 +194,8 @@ async function runScan(file) {
   renderModals();
 
   try {
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 1000,
-        messages: [{ role:'user', content: [
-          { type:'image', source: { type:'base64', media_type:mediaType, data:base64 } },
-          { type:'text', text:`이 이미지는 영수증, 세금계산서, 청구서, 거래명세서 등 매입 관련 문서입니다.
+    if (!GEMINI_API_KEY) throw new Error('Gemini API 키가 설정되지 않았습니다. config.js에서 GEMINI_API_KEY를 입력하세요.');
+    const prompt = `이 이미지는 영수증, 세금계산서, 청구서, 거래명세서 등 매입 관련 문서입니다.
 이미지를 분석하여 아래 JSON 형식으로만 응답하세요. 마크다운 코드블록 없이 JSON만 출력하세요.
 
 {
@@ -220,16 +213,28 @@ async function runScan(file) {
 - 세금계산서면 공급가액과 세액을 분리
 - 영수증(부가세 포함가)이면 amount=총액÷1.1 반올림, tax=총액-amount
 - 날짜를 읽기 어려우면 오늘(${localDate()}) 사용
-- 문서가 아닌 이미지면 confidence=low, note에 설명` }
-        ]}],
-      }),
-    });
+- 문서가 아닌 이미지면 confidence=low, note에 설명`;
+
+    const resp = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [
+            { inline_data: { mime_type: mediaType, data: base64 } },
+            { text: prompt }
+          ]}],
+          generationConfig: { maxOutputTokens: 1000, temperature: 0.1 }
+        }),
+      }
+    );
     if (!resp.ok) {
       const err = await resp.json().catch(() => ({}));
       throw new Error(err?.error?.message || `API 오류 ${resp.status}`);
     }
     const data   = await resp.json();
-    const raw    = data.content?.find(b => b.type === 'text')?.text || '{}';
+    const raw    = data.candidates?.[0]?.content?.parts?.[0]?.text || '{}';
     const clean  = raw.replace(/```[a-z]*\n?/g, '').replace(/```/g, '').trim();
     const parsed = JSON.parse(clean);
     M.scanModal = { state:'done', previewUrl, base64, mediaType, result:parsed, error:null };

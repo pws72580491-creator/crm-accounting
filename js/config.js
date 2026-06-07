@@ -47,6 +47,10 @@ const NAPUM_FB_CFG = {
   appId:             "1:96408145171:web:30a300ff2f7b735d929ee6",
 };
 
+// ── Gemini API Key (AI 영수증 분석) ──────────────────────────────────────────
+// https://aistudio.google.com/apikey 에서 발급
+const GEMINI_API_KEY = 'AQ.Ab8RN6K66sfTIi2_fWeVtYBzf06fTodVNST_RMcpdcWbwPJxVg';
+
 // ── Nav Items ─────────────────────────────────────────────────────────────────
 const NAV = [
   { k:'dashboard',    label:'대시보드',    icon:null }, // icon은 config.js 로드 후 I에서 참조
