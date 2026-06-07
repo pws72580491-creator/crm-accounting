@@ -216,10 +216,10 @@ async function runScan(file) {
 - 문서가 아닌 이미지면 confidence=low, note에 설명`;
 
     const resp = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent`,
       {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${GEMINI_API_KEY}` },
         body: JSON.stringify({
           contents: [{ parts: [
             { inline_data: { mime_type: mediaType, data: base64 } },
