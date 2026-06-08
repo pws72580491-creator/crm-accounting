@@ -566,21 +566,11 @@ async function _loadStatOrders() {
 
     await Promise.all(workspaces.map(async ws => {
       try {
-        const [ordSnap, csSnap] = await Promise.all([
-          napumDb.ref(`workspaces/${ws.id}/orders`).get(),
-          napumDb.ref(`workspaces/${ws.id}/clients`).get(),
-        ]);
-        const orders = Object.values(ordSnap.val() || {});
-        // clientId → name 맵 (clientName이 없거나 다를 경우 보완)
-        const napumClientById = {};
-        Object.values(csSnap.val() || {}).forEach(nc => {
-          if (nc.id != null) napumClientById[String(nc.id)] = nc;
-        });
+        const snap   = await napumDb.ref(`workspaces/${ws.id}/orders`).get();
+        const orders = Object.values(snap.val() || {});
         orders.forEach(o => {
-          const nc     = napumClientById[String(o.clientId)];
-          const oName  = o.clientName || nc?.name || '';
-          if (oName === sm.clientName)
-            allOrders.push({ ...o, clientName: oName, _wsLabel: ws.label, _wsId: ws.id });
+          if ((o.clientName || '') === sm.clientName)
+            allOrders.push({ ...o, _wsLabel: ws.label, _wsId: ws.id });
         });
       } catch (e) { /* 워크스페이스 오류 무시 */ }
     }));
