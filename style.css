@@ -1,0 +1,151 @@
+/* ── Reset ──────────────────────────────────────────────────────────────── */
+*{box-sizing:border-box;margin:0;padding:0;}
+
+/* iOS Safari: 100vh = 주소창 포함 높이 버그 → dvh 폴백 */
+html{height:100%;height:-webkit-fill-available;}
+body{
+  font-family:'Apple SD Gothic Neo','Malgun Gothic','Noto Sans KR',sans-serif;
+  background:#f1f5f9;color:#0f172a;
+  min-height:100vh;min-height:100dvh;
+  min-height:-webkit-fill-available;
+  font-size:15px;
+  overscroll-behavior:none;
+  -webkit-text-size-adjust:100%;
+}
+
+button,a,[role="button"]{
+  touch-action:manipulation;
+  -webkit-tap-highlight-color:transparent;
+  -webkit-touch-callout:none;
+  cursor:pointer;
+}
+button,input,select,textarea{font-family:inherit;}
+
+input,select,textarea{font-size:16px!important;}
+input::placeholder{font-size:14px;}
+
+::-webkit-scrollbar{width:5px;}
+::-webkit-scrollbar-track{background:#f1f5f9;}
+::-webkit-scrollbar-thumb{background:#cbd5e1;border-radius:3px;}
+
+/* ── 가시성 전역 개선 ────────────────────────────────────────────────────── */
+[style*="font-size:10px"]{font-size:12px!important;}
+[style*="font-size:11px"]{font-size:13px!important;}
+[style*="color:#94a3b8"]{color:#64748b!important;}
+[style*="color:#cbd5e1"]{color:#94a3b8!important;}
+[style*="color:#e2e8f0"]{color:#94a3b8!important;}
+
+/* ── Layout ─────────────────────────────────────────────────────────────── */
+#app{display:flex;min-height:100vh;min-height:100dvh;}
+.main-col{flex:1;display:flex;flex-direction:column;min-width:0;}
+.sidebar{
+  width:210px;flex-shrink:0;background:#fff;
+  border-right:1px solid #e2e8f0;display:flex;flex-direction:column;
+  -webkit-overflow-scrolling:touch;
+}
+.mobile-header{
+  display:none;align-items:center;justify-content:space-between;
+  padding:0 16px;
+  padding-top:env(safe-area-inset-top,0px);
+  height:calc(54px + env(safe-area-inset-top,0px));
+  background:#fff;border-bottom:1px solid #e2e8f0;
+  position:sticky;top:0;z-index:30;
+}
+.bottom-wrap{
+  display:none;
+  position:fixed;
+  bottom:0;left:0;right:0;
+  z-index:30;
+  background:#fff;
+  padding-bottom:env(safe-area-inset-bottom,0px);
+}
+.bottom-nav{height:56px;background:#fff;padding:0 8px;display:none;}
+
+.sidebar-overlay{
+  display:none;
+  position:fixed;top:0;right:0;bottom:0;left:0;
+  z-index:40;background:rgba(15,23,42,.35);
+}
+.sidebar-drawer{
+  position:fixed;top:0;left:0;bottom:0;
+  width:230px;background:#fff;
+  border-right:1px solid #e2e8f0;
+  z-index:41;
+  transform:translateX(-100%);
+  transition:transform .22s ease;
+  display:flex;flex-direction:column;
+  -webkit-overflow-scrolling:touch;
+  overflow-y:auto;
+}
+.sidebar-drawer.open{transform:translateX(0);}
+.nav-btn:hover{background:#f1f5f9!important;}
+.hover-row:hover{background:#f8fafc!important;}
+
+main{
+  -webkit-overflow-scrolling:touch;
+  overflow-y:auto;
+}
+
+/* ── Responsive Grids ───────────────────────────────────────────────────── */
+.g4{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;}
+.g3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
+.g2{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+.dash-layout{display:grid;grid-template-columns:1fr 340px;gap:12px;}
+.dash-right{display:flex;flex-direction:column;gap:12px;}
+.dash-right-inner{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
+
+/* ── Table columns ──────────────────────────────────────────────────────── */
+.th,.td{display:flex;align-items:center;}
+.col-date{width:90px;flex-shrink:0;}
+.col-type{width:36px;flex-shrink:0;justify-content:center;}
+.col-amt{width:110px;flex-shrink:0;justify-content:flex-end;}
+.col-tax{width:86px;flex-shrink:0;justify-content:flex-end;}
+.col-status{width:78px;flex-shrink:0;justify-content:center;}
+.col-actions{width:50px;flex-shrink:0;justify-content:center;gap:10px;}
+
+/* ── Tablet ─────────────────────────────────────────────────────────────── */
+@media(max-width:1023px){
+  .g4{grid-template-columns:repeat(2,1fr);}
+  .dash-layout{grid-template-columns:1fr;}
+  .dash-right{display:grid;grid-template-columns:1fr 1fr;}
+  .dash-right-inner{grid-template-columns:repeat(4,1fr);}
+}
+
+/* ── Mobile ─────────────────────────────────────────────────────────────── */
+@media(max-width:639px){
+  .sidebar{display:none!important;}
+  .mobile-header{display:flex;}
+  .bottom-wrap{display:block;}
+  .bottom-nav{display:flex;}
+  .main-col>main{padding-bottom:calc(80px + env(safe-area-inset-bottom,0px));}
+  .g4{grid-template-columns:1fr 1fr;gap:8px;}
+  .g3{grid-template-columns:1fr;}
+  .g2{grid-template-columns:1fr;}
+  .dash-layout{grid-template-columns:1fr;}
+  .dash-right{display:flex;flex-direction:column;}
+  .dash-right-inner{grid-template-columns:1fr 1fr;}
+  .hide-sm{display:none!important;}
+  .stat-val{font-size:18px!important;}
+  .col-date,.col-tax{display:none!important;}
+  .col-amt{width:90px;}
+  .col-status{width:68px;}
+  .pad-main{padding:14px 12px!important;}
+  .page-title{font-size:17px!important;}
+
+  /* 모바일: 추가 가독성 보강 */
+  [style*="font-size:12px"]{font-size:13px!important;}
+  [style*="font-size:13px"]{font-size:14px!important;}
+}
+
+/* datalist 역삼각형 제거 */
+#tf_clientName::-webkit-calendar-picker-indicator{display:none!important;}
+#tf_clientName::-webkit-list-button{display:none!important;}
+
+/* ── 모달 가시성 개선 ────────────────────────────────────────────────────── */
+#modal-root [style*="font-size:10px"]{font-size:12px!important;}
+#modal-root [style*="font-size:11px"]{font-size:13px!important;}
+#modal-root label{font-size:13px!important;font-weight:600;}
+#modal-root [style*="letter-spacing"]{font-size:12px!important;color:#475569!important;font-weight:500;}
+#modal-root [style*="background:#f0f9ff"],
+#modal-root [style*="background:#fdf4ff"]{font-size:13px!important;}
+#modal-root span[style*="border-radius:9999px"]{font-size:12px!important;padding:3px 8px!important;}
