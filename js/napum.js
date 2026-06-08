@@ -174,24 +174,10 @@ function detachNapumListeners() {
  *  allowed: 이 워크스페이스가 공개 허용한 거래처명 배열 (빈 배열 = 공개 없음)
  */
 function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = []) {
-  // allowed가 비어있으면 이 워크스페이스는 아무것도 공개하지 않은 것
-  // → 단, CRM에 직접 등록한 워크스페이스(자기 자신)는 필터 없이 전체 허용
-  const isSelfWs = _getWorkspaces().some(w => w.id === ws.id);
-  const useFilter = !isSelfWs || allowed.length > 0;
-  const allowedSet = new Set(allowed);
-
-  const orders       = Object.values(ordersObj)
-    .filter(o => {
-      if (!useFilter) return true;           // 자기 워크스페이스 + 공개 없음 = 전체 허용
-      if (!isSelfWs && allowed.length === 0) return false; // 외부 ws + 공개 없음 = 전부 차단
-      return allowedSet.has(o.clientName);   // 허용된 거래처만
-    });
-  const napumClients = Object.values(napumClientsObj)
-    .filter(nc => {
-      if (!useFilter) return true;
-      if (!isSelfWs && allowed.length === 0) return false;
-      return allowedSet.has(nc.name);
-    });
+  // CRM 오너는 연동된 모든 워크스페이스의 전체 데이터를 볼 수 있음
+  // allowed(sharedClients)는 외부 공유용이며, CRM 자체에서는 필터 없이 전체 허용
+  const orders       = Object.values(ordersObj);
+  const napumClients = Object.values(napumClientsObj);
   // napumClient id → 객체 맵
   const napumClientById = {};
   napumClients.forEach(nc => { if (nc.id != null) napumClientById[String(nc.id)] = nc; });
@@ -404,13 +390,7 @@ async function doSyncFromDelivery() {
           wsRef.child('sharedClients').get(),
         ]);
 
-        // 이 워크스페이스가 공개 허용한 거래처 목록
-        const allowedClients = scSnap.exists() ? (scSnap.val() || []) : [];
-        const allowedSet     = new Set(allowedClients);
-        // CRM에 직접 등록한 자기 워크스페이스는 전체 허용, 공유로 받은 ws는 필터 적용
-        const isSelfWs   = true; // doSync는 항상 자기가 등록한 ws만 처리
-        const useFilter  = allowedClients.length > 0;
-
+        // CRM 오너는 연동된 모든 워크스페이스 전체 데이터 허용 — sharedClients 필터 미적용
         if (!csSnap.exists() && !ordSnap.exists()) {
           perWorkspace.push({ ...ws, error:true, newTx:0 });
           wsListUpdated[i] = { ...ws, lastSync:'ID 없음', syncedCount:0 };
@@ -418,10 +398,8 @@ async function doSyncFromDelivery() {
         }
 
         const napumClientsRaw = csSnap.val() || {};
-        const napumClients    = Object.values(napumClientsRaw)
-          .filter(nc => !useFilter || allowedSet.has(nc.name));
-        const napumOrders     = Object.values(ordSnap.val() || {})
-          .filter(o  => !useFilter || allowedSet.has(o.clientName));
+        const napumClients    = Object.values(napumClientsRaw);
+        const napumOrders     = Object.values(ordSnap.val() || {});
 
         // napumClient id → 객체 맵 (order.clientId 매핑용)
         const napumClientById = {};
