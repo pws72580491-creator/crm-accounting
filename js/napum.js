@@ -566,17 +566,21 @@ async function _loadStatOrders() {
 
     await Promise.all(workspaces.map(async ws => {
       try {
-        // 1) 이 워크스페이스가 공개 허용한 거래처 확인
-        const scSnap       = await napumDb.ref(`workspaces/${ws.id}/sharedClients`).get();
-        const allowedNames = scSnap.exists() ? (scSnap.val() || []) : [];
-        // 공개 목록이 있고, 현재 조회 거래처가 허용 목록에 없으면 스킵
-        if (allowedNames.length > 0 && !allowedNames.includes(sm.clientName)) return;
-
-        const snap   = await napumDb.ref(`workspaces/${ws.id}/orders`).get();
-        const orders = Object.values(snap.val() || {});
+        const [ordSnap, csSnap] = await Promise.all([
+          napumDb.ref(`workspaces/${ws.id}/orders`).get(),
+          napumDb.ref(`workspaces/${ws.id}/clients`).get(),
+        ]);
+        const orders = Object.values(ordSnap.val() || {});
+        // clientId → name 맵 (clientName이 없거나 다를 경우 보완)
+        const napumClientById = {};
+        Object.values(csSnap.val() || {}).forEach(nc => {
+          if (nc.id != null) napumClientById[String(nc.id)] = nc;
+        });
         orders.forEach(o => {
-          if ((o.clientName || '') === sm.clientName)
-            allOrders.push({ ...o, _wsLabel: ws.label, _wsId: ws.id });
+          const nc     = napumClientById[String(o.clientId)];
+          const oName  = o.clientName || nc?.name || '';
+          if (oName === sm.clientName)
+            allOrders.push({ ...o, clientName: oName, _wsLabel: ws.label, _wsId: ws.id });
         });
       } catch (e) { /* 워크스페이스 오류 무시 */ }
     }));
