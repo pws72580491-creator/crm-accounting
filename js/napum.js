@@ -265,17 +265,39 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
     } else {
       const alreadyExists = S.transactions.some(t => t._napumId === napumKey);
       if (!alreadyExists) {
-        const newT = {
-          id: nextId(S.transactions), date: o.date, clientId: crmClientId,
-          type: '매출', amount, tax: 0, memo, status, _napumId: napumKey,
-        };
-        if (o.items && o.items.length)  newT.items            = o.items;
-        if (o.paidAmount)               newT.paidAmount       = o.paidAmount;
-        if (o.paidAt)                   newT.paidAt           = o.paidAt;
-        if (o.paidMethod)               newT.paidMethod       = o.paidMethod;
-        if (o.paidMethodDetail)         newT.paidMethodDetail = o.paidMethodDetail;
-        S.transactions = [...S.transactions, newT];
-        synced.add(napumKey); changed = true;
+        // ── 소프트 중복 방지: 날짜 + 거래처 + 금액이 동일한 납품 연동 거래가
+        //    이미 있으면 _napumId만 업데이트하고 신규 등록 생략
+        //    (다른 버전 앱 또는 재등록으로 orderId가 달라진 경우 대응)
+        const softDup = S.transactions.find(t =>
+          t._napumId &&
+          t.date      === o.date &&
+          t.clientId  === crmClientId &&
+          t.amount    === amount
+        );
+        if (softDup) {
+          // 기존 거래의 _napumId를 현재 napumKey로 교체 (최신 orderId 추적)
+          console.info('[납품 실시간] 소프트 중복 감지 → _napumId 교체',
+            softDup._napumId, '→', napumKey);
+          S.transactions = S.transactions.map(t =>
+            t.id === softDup.id
+              ? { ...t, _napumId: napumKey, status, memo }
+              : t
+          );
+          napumIdToCrmId[napumKey] = softDup.id;
+          synced.add(napumKey); changed = true;
+        } else {
+          const newT = {
+            id: nextId(S.transactions), date: o.date, clientId: crmClientId,
+            type: '매출', amount, tax: 0, memo, status, _napumId: napumKey,
+          };
+          if (o.items && o.items.length)  newT.items            = o.items;
+          if (o.paidAmount)               newT.paidAmount       = o.paidAmount;
+          if (o.paidAt)                   newT.paidAt           = o.paidAt;
+          if (o.paidMethod)               newT.paidMethod       = o.paidMethod;
+          if (o.paidMethodDetail)         newT.paidMethodDetail = o.paidMethodDetail;
+          S.transactions = [...S.transactions, newT];
+          synced.add(napumKey); changed = true;
+        }
       }
     }
   });
@@ -481,17 +503,37 @@ async function doSyncFromDelivery() {
           } else {
             const alreadyExists = S.transactions.some(t => t._napumId === napumKey);
             if (!alreadyExists) {
-              const newT = {
-                id: nextId(S.transactions), date: o.date, clientId: crmClientId,
-                type: '매출', amount, tax: 0, memo, status, _napumId: napumKey,
-              };
-              if (o.items && o.items.length)  newT.items            = o.items;
-              if (o.paidAmount)               newT.paidAmount       = o.paidAmount;
-              if (o.paidAt)                   newT.paidAt           = o.paidAt;
-              if (o.paidMethod)               newT.paidMethod       = o.paidMethod;
-              if (o.paidMethodDetail)         newT.paidMethodDetail = o.paidMethodDetail;
-              S.transactions = [...S.transactions, newT];
-              synced.add(napumKey); wsNewTx++; totalNewTx++;
+              // ── 소프트 중복 방지: 날짜 + 거래처 + 금액이 동일한 납품 연동 거래
+              //    (다른 버전 앱 또는 재등록으로 orderId가 달라진 경우 대응)
+              const softDup = S.transactions.find(t =>
+                t._napumId &&
+                t.date     === o.date &&
+                t.clientId === crmClientId &&
+                t.amount   === amount
+              );
+              if (softDup) {
+                console.info('[납품 동기화] 소프트 중복 감지 → _napumId 교체',
+                  softDup._napumId, '→', napumKey);
+                S.transactions = S.transactions.map(t =>
+                  t.id === softDup.id
+                    ? { ...t, _napumId: napumKey, status, memo }
+                    : t
+                );
+                napumIdToCrmId[napumKey] = softDup.id;
+                synced.add(napumKey); wsUpdTx++; totalUpdTx++;
+              } else {
+                const newT = {
+                  id: nextId(S.transactions), date: o.date, clientId: crmClientId,
+                  type: '매출', amount, tax: 0, memo, status, _napumId: napumKey,
+                };
+                if (o.items && o.items.length)  newT.items            = o.items;
+                if (o.paidAmount)               newT.paidAmount       = o.paidAmount;
+                if (o.paidAt)                   newT.paidAt           = o.paidAt;
+                if (o.paidMethod)               newT.paidMethod       = o.paidMethod;
+                if (o.paidMethodDetail)         newT.paidMethodDetail = o.paidMethodDetail;
+                S.transactions = [...S.transactions, newT];
+                synced.add(napumKey); wsNewTx++; totalNewTx++;
+              }
             }
           }
         });
