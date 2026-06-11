@@ -121,7 +121,7 @@ function showToast(msg) {
 
 // ── Transaction Helpers ───────────────────────────────────────────────────────
 const _txRemain    = t => (t.amount + t.tax) - (t.paidAmount || 0);
-const _txIsPending = t => t.status === '미수금' || t.status === '미지급금';
+const _txIsPending = t => !isTxComplete(t.status);
 
 /** 상태 배지 HTML */
 function statusBadge(status, txId) {
@@ -135,7 +135,7 @@ function statusBadge(status, txId) {
   const label = partial ? '💳 부분' : esc(status);
 
   if (txId != null) {
-    if (status === '미수금' || status === '미지급금')
+    if (!isTxComplete(status))
       return `<span onclick="openQuickPay(${txId})" style="background:${c.bg};border:1px solid ${c.bd};color:${c.tx};cursor:pointer;font-size:11px;padding:2px 8px;border-radius:9999px;font-weight:600;user-select:none;white-space:nowrap;">${label}</span>`;
     return `<span onclick="toggleStatus(${txId})" style="background:${c.bg};border:1px solid ${c.bd};color:${c.tx};cursor:pointer;font-size:11px;padding:2px 8px;border-radius:9999px;font-weight:600;user-select:none;white-space:nowrap;">${label}</span>`;
   }

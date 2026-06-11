@@ -8,6 +8,8 @@ let S = {
   txMonth: null, txPeriodMode: 'daily', txDate: null, txWeek: null,
   // UI
   drawerOpen: false, rcvSearch: '',
+  rcvPeriod: 'month',   // 'month' | 'quarter' | 'all'
+  rcvMonth:  (() => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; })(),
   // 대시보드 PIN 잠금
   dashLocked: false,
 };
@@ -105,12 +107,14 @@ async function saveTX() {
   catch (e) { showToast('⚠️ 클라우드 저장 실패 (로컬 저장됨)'); console.warn('saveTX:', e); }
 }
 async function _saveOneClient(obj) {
+  obj.updatedAt = Date.now();
   lsSet('crm_clients', S.clients);
   if (!db) return;
   try { await db.ref('clients/' + obj.id).set(obj); }
   catch (e) { showToast('⚠️ 클라우드 저장 실패 (로컬 저장됨)'); console.warn('_saveOneClient:', e); }
 }
 async function _saveOneTx(obj) {
+  obj.updatedAt = Date.now();
   lsSet('crm_tx', S.transactions);
   if (!db) return;
   try { await db.ref('transactions/' + obj.id).set(obj); }
@@ -206,13 +210,13 @@ function deleteTxFn(id) {
 
 /** 상태 토글 (배지 클릭) */
 function toggleStatus(txId) {
-  const next = { 미수금:'수금완료', 수금완료:'미수금', 미지급금:'지급완료', 지급완료:'미지급금' };
+  const next = TX_STATUS_NEXT;
   let updatedTx = null;
   S.transactions = S.transactions.map(t => {
     if (t.id !== txId) return t;
     const newStatus = next[t.status] || t.status;
-    const isFull    = newStatus === '수금완료' || newStatus === '지급완료';
-    const isPending = newStatus === '미수금'   || newStatus === '미지급금';
+    const isFull    = isTxComplete(newStatus);
+    const isPending = newStatus === TX_STATUS.UNPAID   || newStatus === TX_STATUS.UNBILLED;
     const u = { ...t, status: newStatus };
     if (isFull && !u.paidAmount) {
       u.paidAmount = t.amount + t.tax;
@@ -236,7 +240,7 @@ function completeStatus(txId, status) {
   let updatedTx = null;
   S.transactions = S.transactions.map(t => {
     if (t.id !== txId) return t;
-    const isFull = status === '수금완료' || status === '지급완료';
+    const isFull = isTxComplete(status);
     const u = { ...t, status };
     if (isFull && !u.paidAmount) {
       u.paidAmount = t.amount + t.tax;
@@ -298,7 +302,7 @@ async function _refetchNapumOrderAfterPatch(napumKey) {
       const prev  = JSON.stringify(t);
       const next  = { ...t,
         // order.isPaid=false 시 상태를 미수금으로 명시 (이전 상태 유지하지 않음)
-        status:    order.isPaid ? (t.status === '미지급금' ? '지급완료' : '수금완료') : '미수금',
+        status:    order.isPaid ? (t.status === TX_STATUS.UNBILLED ? TX_STATUS.BILLED : TX_STATUS.PAID) : TX_STATUS.UNPAID,
         paidAmount: order.paidAmount ?? t.paidAmount,
         // null이 오면 명시적으로 삭제 — ?? 연산자는 null을 이전 값으로 fallback시킴
         paidAt:    order.paidAt  !== undefined ? order.paidAt    : t.paidAt,

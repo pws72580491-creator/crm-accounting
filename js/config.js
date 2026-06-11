@@ -1,5 +1,5 @@
 // ── Version ───────────────────────────────────────────────────────────────────
-const APP_VERSION = 'v1.6.0';
+const APP_VERSION = 'v6.0';
 
 // ── Sample Data ───────────────────────────────────────────────────────────────
 const SAMPLE_CLIENTS = [
@@ -81,3 +81,26 @@ const FB  = `onfocus="this.style.borderColor='#d97706'" onblur="this.style.borde
 const BACKUP_LS_KEY  = 'crm_auto_backups';
 const BACKUP_FB_PATH = 'backups';
 const BACKUP_MAX     = 10;
+
+// ── 거래 상태 상수 (항목 2: TX_STATUS 상수화) ─────────────────────────────────
+const TX_STATUS = Object.freeze({
+  UNPAID:    '미수금',
+  PAID:      '수금완료',
+  UNBILLED:  '미지급금',
+  BILLED:    '지급완료',
+});
+// 상태 전환 맵
+const TX_STATUS_NEXT = Object.freeze({
+  [TX_STATUS.UNPAID]:   TX_STATUS.PAID,
+  [TX_STATUS.PAID]:     TX_STATUS.UNPAID,
+  [TX_STATUS.UNBILLED]: TX_STATUS.BILLED,
+  [TX_STATUS.BILLED]:   TX_STATUS.UNBILLED,
+});
+// 완납 여부
+function isTxComplete(status) {
+  return status === TX_STATUS.PAID || status === TX_STATUS.BILLED;
+}
+// 매출/매입 기본 상태
+function defaultStatus(type) {
+  return type === '매출' ? TX_STATUS.UNPAID : TX_STATUS.UNBILLED;
+}

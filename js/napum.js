@@ -50,7 +50,7 @@ async function _patchNapumOrder(napumKey, patchObj) {
 }
 
 function _buildNapumPatch(crmTx) {
-  const isPaid = crmTx.status === '수금완료';
+  const isPaid = crmTx.status === TX_STATUS.PAID;
   const patch = {
     isPaid,
     paidAmount:    crmTx.paidAmount || 0,
@@ -80,8 +80,9 @@ async function attachNapumListeners() {
   for (const wsId of Object.keys(_napumListeners)) {
     if (!wsIds.has(wsId)) {
       const h = _napumListeners[wsId];
-      if (h.clientsRef) h.clientsRef.off('value', h.clientsCb);
-      if (h.ordersRef)  h.ordersRef.off('value',  h.ordersCb);
+      if (h.clientsRef)       h.clientsRef.off('value', h.clientsCb);
+      if (h.ordersRef)        h.ordersRef.off('value',  h.ordersCb);
+      if (h.sharedClientsRef) h.sharedClientsRef.off('value', h.sharedClientsCb);
       delete _napumListeners[wsId];
     }
   }
@@ -107,30 +108,24 @@ async function attachNapumListeners() {
         // 이후 clients 변경 실시간 반영
         clientsRef.on('value', clientsCb, e => console.warn('납품 clients 리스너:', e));
 
-        // clients 준비 완료 후 orders 리스너 등록
-        // ── sharedClients 캐시: 이 워크스페이스가 외부에 공개한 거래처 목록 ──
-        let _sharedClientsCache = null; // null = 아직 미로드, [] = 공개 없음
+        // ── sharedClients 실시간 리스너 (on만 사용 — on은 즉시 현재값 콜백) ──
+        let _sharedClientsCache = [];
         const sharedClientsRef = wsRef.child('sharedClients');
-        // 초기 1회 로드
-        sharedClientsRef.once('value').then(sc => {
+        const sharedClientsCb  = sc => {
           _sharedClientsCache = sc.exists() ? (sc.val() || []) : [];
-        }).catch(() => { _sharedClientsCache = []; });
-        // 이후 실시간 변경 반영
-        sharedClientsRef.on('value', sc => {
-          _sharedClientsCache = sc.exists() ? (sc.val() || []) : [];
-        }, e => console.warn('납품 sharedClients 리스너:', e));
+        };
+        sharedClientsRef.on('value', sharedClientsCb,
+          e => console.warn('납품 sharedClients 리스너:', e));
 
         const ordersRef = wsRef.child('orders');
         const ordersCb  = snap => {
-          if (!_clientsReady) return; // 방어 (사실상 항상 true)
-          // sharedClients 미로드 시 빈 배열로 처리 (공개 없음)
-          const allowed = _sharedClientsCache || [];
+          const allowed = _sharedClientsCache;
           _processNapumOrdersSnapshot(ws, snap.val() || {}, _napumClientsCache, allowed);
         };
         ordersRef.on('value', ordersCb, e => console.warn('납품 orders 리스너:', e));
 
-        // 핸들러 저장 (detach용)
-        _napumListeners[ws.id] = { clientsRef, clientsCb, ordersRef, ordersCb };
+        // 핸들러 저장 (detach용) — sharedClientsRef 포함
+        _napumListeners[ws.id] = { clientsRef, clientsCb, sharedClientsRef, sharedClientsCb, ordersRef, ordersCb };
         console.info('[납품 실시간] 리스너 등록 완료:', ws.label, ws.id,
           '| 거래처', Object.keys(_napumClientsCache).length, '명');
       })
@@ -167,8 +162,9 @@ function _reattachNapumListenersIfNeeded() {
 function detachNapumListeners() {
   for (const wsId of Object.keys(_napumListeners)) {
     const h = _napumListeners[wsId];
-    if (h.clientsRef) h.clientsRef.off('value', h.clientsCb);
-    if (h.ordersRef)  h.ordersRef.off('value',  h.ordersCb);
+    if (h.clientsRef)       h.clientsRef.off('value', h.clientsCb);
+    if (h.ordersRef)        h.ordersRef.off('value',  h.ordersCb);
+    if (h.sharedClientsRef) h.sharedClientsRef.off('value', h.sharedClientsCb);
     delete _napumListeners[wsId];
   }
 }
@@ -263,7 +259,7 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
     const memoItems = (o.items || []).map(i => `${i.name}${i.qty > 1 ? ` ×${i.qty}` : ''}`).join(', ');
     const memo      = `[${ws.label}]${o.isVoid ? ' [타인]' : ''} ${o.note || (memoItems || '납품')}`;
     const amount    = Number(o.total) || 0;
-    const status    = o.isPaid ? '수금완료' : '미수금';
+    const status    = o.isPaid ? TX_STATUS.PAID : TX_STATUS.UNPAID;
     const napumKey  = `${ws.id}:${o.id}`;
 
     if (napumIdToCrmId[napumKey]) {
@@ -490,7 +486,7 @@ async function doSyncFromDelivery() {
           const memoItems = (o.items || []).map(i => `${i.name}${i.qty > 1 ? ` ×${i.qty}` : ''}`).join(', ');
           const memo      = `[${ws.label}]${o.isVoid ? ' [타인]' : ''} ${o.note || (memoItems || '납품')}`;
           const amount    = Number(o.total) || 0;
-          const status    = o.isPaid ? '수금완료' : '미수금';
+          const status    = o.isPaid ? TX_STATUS.PAID : TX_STATUS.UNPAID;
           const napumKey  = `${ws.id}:${o.id}`;
 
           if (napumIdToCrmId[napumKey]) {

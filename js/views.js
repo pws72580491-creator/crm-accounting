@@ -40,8 +40,8 @@ function buildDashboard() {
   const plBg    = pl >= 0 ? '#f0fdf4' : '#fff1f2';
   const plBd    = pl >= 0 ? '#bbf7d0' : '#fecdd3';
 
-  const rcv = S.transactions.filter(t => t.status === '미수금').reduce((s, t) => s + _txRemain(t), 0);
-  const pay = S.transactions.filter(t => t.status === '미지급금').reduce((s, t) => s + _txRemain(t), 0);
+  const rcv = S.transactions.filter(t => t.status === TX_STATUS.UNPAID).reduce((s, t) => s + _txRemain(t), 0);
+  const pay = S.transactions.filter(t => t.status === TX_STATUS.UNBILLED).reduce((s, t) => s + _txRemain(t), 0);
 
   const monRev      = monT.filter(t => t.type === '매출');
   const totalBill   = monRev.reduce((s, t) => s + t.amount + t.tax, 0);
@@ -69,7 +69,7 @@ function buildDashboard() {
   const maxV = top[0]?.v || 1;
 
   // 미수금 오래된 순 TOP5
-  const oldUnpaid = [...S.transactions].filter(t => t.status === '미수금').sort((a, b) => a.date.localeCompare(b.date)).slice(0, 5);
+  const oldUnpaid = [...S.transactions].filter(t => t.status === TX_STATUS.UNPAID).sort((a, b) => a.date.localeCompare(b.date)).slice(0, 5);
 
   // 거래처 현황
   const cAll  = S.clients.length;
@@ -275,7 +275,7 @@ function _buildCRows() {
 
   const clientStats = id => {
     const txs     = S.transactions.filter(t => t.clientId === id);
-    const unpaid  = txs.filter(t => t.status === '미수금').reduce((s, t) => s + _txRemain(t), 0);
+    const unpaid  = txs.filter(t => t.status === TX_STATUS.UNPAID).reduce((s, t) => s + _txRemain(t), 0);
     return { txs, unpaid };
   };
 
@@ -624,7 +624,7 @@ function buildTransactions() {
     const a = S.txTf === t;
     return `<button onclick="setTxTf('${t}')" style="padding:7px 10px;border-radius:8px;font-size:12px;font-weight:${a?700:400};background:${a?'#d97706':'#f8fafc'};color:${a?'#fff':'#64748b'};border:1px solid ${a?'#d97706':'#e2e8f0'};cursor:pointer;">${t}</button>`;
   }).join('');
-  const stBtns = ['전체','미수금','수금완료','미지급금','지급완료'].map(s => {
+  const stBtns = ['전체',TX_STATUS.UNPAID,TX_STATUS.PAID,TX_STATUS.UNBILLED,TX_STATUS.BILLED].map(s => {
     const a = S.txSf === s;
     return `<button onclick="setTxSf('${s}')" style="padding:7px 9px;border-radius:8px;font-size:11px;font-weight:${a?700:400};background:${a?'#d97706':'#f8fafc'};color:${a?'#fff':'#64748b'};border:1px solid ${a?'#d97706':'#e2e8f0'};cursor:pointer;">${s}</button>`;
   }).join('');
@@ -704,10 +704,63 @@ function buildTransactions() {
 }
 
 // ── RECEIVABLES VIEW ──────────────────────────────────────────────────────────
+function _rcvPeriodLabel() {
+  const p = S.rcvPeriod;
+  if (p === 'all') return '전체';
+  if (p === 'month') {
+    const [y, m] = S.rcvMonth.split('-');
+    return `${y}년 ${parseInt(m)}월`;
+  }
+  if (p === 'quarter') {
+    const [y, m] = S.rcvMonth.split('-').map(Number);
+    const q = Math.ceil(m / 3);
+    return `${y}년 ${q}분기`;
+  }
+  return '';
+}
+
+function _rcvFilterByPeriod(items) {
+  const p = S.rcvPeriod;
+  if (p === 'all') return items;
+  const [y, mo] = S.rcvMonth.split('-').map(Number);
+  return items.filter(t => {
+    if (!t.date) return false;
+    const [ty, tm] = t.date.split('-').map(Number);
+    if (p === 'month') return ty === y && tm === mo;
+    if (p === 'quarter') {
+      const q  = Math.ceil(mo / 3);
+      const tq = Math.ceil(tm / 3);
+      return ty === y && tq === q;
+    }
+    return true;
+  });
+}
+
 function buildReceivables() {
-  const rec = S.transactions.filter(t => t.status === '미수금');
-  const pay = S.transactions.filter(t => t.status === '미지급금');
+  const p   = S.rcvPeriod;
   const q   = S.rcvSearch || '';
+  const [y, mo] = S.rcvMonth.split('-').map(Number);
+
+  // 이번 달 다음 달 여부 (미래 이동 막기)
+  const now = new Date();
+  const isMaxMonth = y > now.getFullYear() || (y === now.getFullYear() && mo >= now.getMonth() + 1);
+
+  // 기간 버튼 스타일
+  const btnStyle = (active) =>
+    `padding:5px 13px;border-radius:20px;font-size:12px;font-weight:600;cursor:pointer;border:none;` +
+    (active ? `background:#d97706;color:#fff;` : `background:#f1f5f9;color:#64748b;`);
+
+  // 월 이동 컨트롤 (월별/분기별일 때만)
+  const navHtml = (p !== 'all') ? `
+    <div style="display:flex;align-items:center;gap:6px;margin-top:8px;">
+      <button onclick="rcvMonthMove(-1)" style="width:30px;height:30px;border-radius:50%;border:1px solid #e2e8f0;background:#fff;font-size:16px;cursor:pointer;display:flex;align-items:center;justify-content:center;">‹</button>
+      <span style="font-size:13px;font-weight:700;color:#0f172a;min-width:90px;text-align:center;">${_rcvPeriodLabel()}</span>
+      <button onclick="rcvMonthMove(1)" ${isMaxMonth ? 'disabled' : ''} style="width:30px;height:30px;border-radius:50%;border:1px solid #e2e8f0;background:${isMaxMonth?'#f8fafc':'#fff'};font-size:16px;cursor:${isMaxMonth?'default':'pointer'};display:flex;align-items:center;justify-content:center;color:${isMaxMonth?'#cbd5e1':'#0f172a'};">›</button>
+    </div>` : '';
+
+  const allTx  = _rcvFilterByPeriod(S.transactions);
+  const rec    = allTx.filter(t => t.status === TX_STATUS.UNPAID);
+  const pay    = allTx.filter(t => t.status === TX_STATUS.UNBILLED);
 
   function _filterByQ(items) {
     if (!q) return items;
@@ -723,16 +776,30 @@ function buildReceivables() {
 
   return `
     <div style="display:flex;flex-direction:column;gap:16px;">
-      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:8px;">
         <div>
           <h1 class="page-title" style="color:#0f172a;font-size:20px;font-weight:700;">채권·채무 관리</h1>
           <p style="color:#64748b;font-size:12px;margin-top:2px;">미수금 및 미지급금 현황</p>
         </div>
       </div>
+
+      <!-- 기간 선택 탭 -->
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <div style="display:flex;gap:6px;">
+          <button onclick="setRcvPeriod('month')"   style="${btnStyle(p==='month')}">월별</button>
+          <button onclick="setRcvPeriod('quarter')" style="${btnStyle(p==='quarter')}">분기별</button>
+          <button onclick="setRcvPeriod('all')"     style="${btnStyle(p==='all')}">전체</button>
+        </div>
+        ${navHtml}
+      </div>
+
+      <!-- 검색 -->
       <div style="position:relative;">
         <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:#94a3b8;pointer-events:none;">${I.search}</span>
         <input id="rcvSearchInput" value="${esc(q)}" oninput="setRcvSearch(this.value)" onkeydown="if(event.key==='Enter'||event.keyCode===13){this.blur();}" enterkeyhint="search" placeholder="거래처 검색… (초성 가능)" style="${ISX}padding-left:30px;" ${FB}>
       </div>
+
+      <!-- 합계 카드 -->
       <div class="g2">
         <div style="background:#fefce8;border:1px solid #fcd34d;border-radius:12px;padding:16px;">
           <div style="color:#b45309;font-size:12px;margin-bottom:5px;">총 미수금 (받을 돈)</div>
@@ -750,8 +817,9 @@ function buildReceivables() {
 }
 
 function _buildRcvSections() {
-  const rec = S.transactions.filter(t => t.status === '미수금');
-  const pay = S.transactions.filter(t => t.status === '미지급금');
+  const allTx = _rcvFilterByPeriod(S.transactions);
+  const rec   = allTx.filter(t => t.status === TX_STATUS.UNPAID);
+  const pay   = allTx.filter(t => t.status === TX_STATUS.UNBILLED);
   const q   = S.rcvSearch || '';
 
   function groupByClient(items) {

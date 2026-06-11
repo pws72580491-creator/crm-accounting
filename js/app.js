@@ -31,6 +31,41 @@ function sidebarInner(onClose = '') {
       <div style="text-align:center;color:#cbd5e1;font-size:10px;padding-top:2px;">거래처 ${S.clients.length}개 · ${S.transactions.length}건</div>
       <div style="text-align:center;color:#e2e8f0;font-size:10px;">${APP_VERSION}</div>
       ${_syncBadgeHTML()}
+      <!-- 변경이력 아코디언 -->
+      <div style="margin-top:6px;border-top:1px solid #334155;padding-top:6px;">
+        <button onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none';this.querySelector('.arr').textContent=this.nextElementSibling.style.display==='none'?'▶':'▼'"
+          style="width:100%;background:none;border:none;color:#94a3b8;font-size:11px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px;padding:3px 0;">
+          <span class="arr">▶</span> 변경이력
+        </button>
+        <div style="display:none;margin-top:6px;max-height:220px;overflow-y:auto;font-size:10px;color:#94a3b8;line-height:1.6;">
+          <div style="margin-bottom:8px;">
+            <span style="color:#34d399;font-weight:700;">v6.0</span>
+            <ul style="margin:3px 0 0 12px;padding:0;list-style:disc;">
+              <li>채권·채무 기간 필터 (월별/분기별/전체) + 좌우 이동</li>
+              <li>TX_STATUS 상수화 — 상태 문자열 직접 비교 제거</li>
+              <li>updatedAt 자동 기록 (저장 시마다)</li>
+              <li>Firebase listener 메모리 정리 개선 (sharedClientsRef detach)</li>
+              <li>납품앱 실시간 리스너 _pending 마커 버그 수정</li>
+            </ul>
+          </div>
+          <div style="margin-bottom:8px;">
+            <span style="color:#94a3b8;font-weight:700;">v5.0</span>
+            <ul style="margin:3px 0 0 12px;padding:0;list-style:disc;">
+              <li>다중 워크스페이스 실시간 동기화</li>
+              <li>sharedClients 필터링 (isSelfWs 버그 수정)</li>
+              <li>납품앱 ↔ CRM 결제 역방향 패치</li>
+            </ul>
+          </div>
+          <div style="margin-bottom:8px;">
+            <span style="color:#94a3b8;font-weight:700;">v4.0</span>
+            <ul style="margin:3px 0 0 12px;padding:0;list-style:disc;">
+              <li>멀티파일 구조 분리 (js/)</li>
+              <li>채권·채무 관리 뷰</li>
+              <li>일괄 수금 처리</li>
+            </ul>
+          </div>
+        </div>
+      </div>
     </div>`;
 }
 
@@ -126,11 +161,11 @@ function buildClientModal() {
 function buildTxModal() {
   const m   = M.txModal;
   const isEd = m !== 'add' && typeof m === 'object';
-  const f   = isEd ? m : { date:today(), clientId:S.clients[0]?.id||1, type:'매출', amount:'', tax:'', taxType:'taxable', memo:'', status:'미수금' };
+  const f   = isEd ? m : { date:today(), clientId:S.clients[0]?.id||1, type:'매출', amount:'', tax:'', taxType:'taxable', memo:'', status:defaultStatus('매출') };
   if (!f.taxType) f.taxType = (f.tax === 0 && f.amount > 0) ? 'exempt' : 'taxable';
   const initClientName = isEd ? (S.clients.find(c => c.id === f.clientId)?.name || '') : '';
   const clientOpts = S.clients.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
-  const stOpts     = (f.type === '매출' ? ['미수금','수금완료'] : ['미지급금','지급완료']).map(s => `<option ${s === f.status ? 'selected' : ''}>${esc(s)}</option>`).join('');
+  const stOpts     = (f.type === '매출' ? [TX_STATUS.UNPAID,TX_STATUS.PAID] : [TX_STATUS.UNBILLED,TX_STATUS.BILLED]).map(s => `<option ${s === f.status ? 'selected' : ''}>${esc(s)}</option>`).join('');
   const isTaxable  = f.taxType !== 'exempt';
   const taxAmt     = isTaxable ? (+f.tax || 0) : 0;
   const preview    = f.amount > 0
@@ -345,7 +380,7 @@ async function applyScanResult() {
   if (!clientId) { showToast('거래처를 선택하세요.'); return; }
   if (!amtRaw)   { showToast('금액을 입력하세요.'); return; }
   if (!dateVal)  { showToast('거래일자를 확인하세요.'); return; }
-  const tx = { date:dateVal, clientId, type:'매입', amount:parseInt(amtRaw)||0, tax:parseInt(taxRaw)||0, memo, status:'미지급금', id:nextId(S.transactions) };
+  const tx = { date:dateVal, clientId, type:'매입', amount:parseInt(amtRaw)||0, tax:parseInt(taxRaw)||0, memo, status:TX_STATUS.UNBILLED, id:nextId(S.transactions) };
   S.transactions = [...S.transactions, tx];
   saveTX();
   URL.revokeObjectURL(M.scanModal?.previewUrl);
@@ -370,7 +405,7 @@ function buildQuickPayModal() {
   const total = t.amount + t.tax;
   const already = t.paidAmount || 0;
   const remain  = total - already;
-  const isSales = t.status === '미수금';
+  const isSales = t.status === TX_STATUS.UNPAID;
   const accentColor = isSales ? '#16a34a' : '#1d4ed8';
   const label   = isSales ? '수금' : '지급';
   const previewAmt = mo.method === 'mixed' ? (mo.mixCash||0)+(mo.mixTransfer||0) : (mo.amount||0);
@@ -434,7 +469,7 @@ function confirmQuickPay() {
     if (tx.id !== mo.txId) return tx;
     const next = { ...tx, paidAmount: already + amt, paidAt, paidMethod: mo.method };
     if (paidMethodDetail) next.paidMethodDetail = paidMethodDetail;
-    if (isFull) next.status = tx.status === '미수금' ? '수금완료' : '지급완료';
+    if (isFull) next.status = tx.status === TX_STATUS.UNPAID ? TX_STATUS.PAID : TX_STATUS.BILLED;
     delete next.dlControlled; // CRM이 직접 처리 → 거래장 우선권 해제
     updatedTx = next; return next;
   });
@@ -448,7 +483,7 @@ function confirmQuickPay() {
 
 // ── 일괄 수금 ─────────────────────────────────────────────────────────────────
 function openBatchPay(clientId) {
-  const pending = S.transactions.filter(t => t.clientId === clientId && t.status === '미수금').sort((a,b)=>a.date.localeCompare(b.date));
+  const pending = S.transactions.filter(t => t.clientId === clientId && t.status === TX_STATUS.UNPAID).sort((a,b)=>a.date.localeCompare(b.date));
   if (!pending.length) { showToast('미수금이 없습니다.'); return; }
   M.batchPayModal = { clientId, amount: pending.reduce((s,t)=>s+_txRemain(t),0), method:'cash', cash:0, transfer:0 };
   _pushModalHistory(); renderModals();
@@ -458,7 +493,7 @@ function closeBatchPay() { M.batchPayModal = null; render(); }
 function _renderBatchPreview() {
   const mo  = M.batchPayModal;
   const el  = document.getElementById('bp_preview'); if (!el) return;
-  const pending = S.transactions.filter(t=>t.clientId===mo.clientId&&t.status==='미수금').sort((a,b)=>a.date.localeCompare(b.date));
+  const pending = S.transactions.filter(t=>t.clientId===mo.clientId&&t.status===TX_STATUS.UNPAID).sort((a,b)=>a.date.localeCompare(b.date));
   const amt = mo.method === 'mixed' ? (mo.mixCash||0)+(mo.mixTransfer||0) : (mo.amount||0);
   if (amt <= 0) { el.style.display = 'none'; return; }
   el.style.display = 'block';
@@ -482,7 +517,7 @@ function _renderBatchPreview() {
 function buildBatchPayModal() {
   const mo      = M.batchPayModal;
   const cl      = S.clients.find(c => c.id === mo.clientId);
-  const pending = S.transactions.filter(t=>t.clientId===mo.clientId&&t.status==='미수금').sort((a,b)=>a.date.localeCompare(b.date));
+  const pending = S.transactions.filter(t=>t.clientId===mo.clientId&&t.status===TX_STATUS.UNPAID).sort((a,b)=>a.date.localeCompare(b.date));
   const totalRemain = pending.reduce((s,t)=>s+_txRemain(t),0);
   const _thisYm     = localDate(new Date()).slice(0,7);
   const carryAmt    = pending.filter(t=>t.date.slice(0,7)<_thisYm).reduce((s,t)=>s+_txRemain(t),0);
@@ -523,7 +558,7 @@ function buildBatchPayModal() {
 
 function confirmBatchPay() {
   const mo      = M.batchPayModal;
-  const pending = S.transactions.filter(t=>t.clientId===mo.clientId&&t.status==='미수금').sort((a,b)=>a.date.localeCompare(b.date));
+  const pending = S.transactions.filter(t=>t.clientId===mo.clientId&&t.status===TX_STATUS.UNPAID).sort((a,b)=>a.date.localeCompare(b.date));
   const amt     = mo.method === 'mixed' ? (mo.mixCash||0)+(mo.mixTransfer||0) : (mo.amount||0);
   if (amt <= 0) { showToast('금액을 입력하세요.'); return; }
   const paidAt          = new Date().toISOString();
@@ -538,7 +573,7 @@ function confirmBatchPay() {
       const isFull = apply >= due;
       const next   = { ...tx, paidAmount:(tx.paidAmount||0)+apply, paidAt, paidMethod:mo.method };
       if (paidMethodDetail) next.paidMethodDetail = paidMethodDetail;
-      if (isFull) next.status = '수금완료';
+      if (isFull) next.status = TX_STATUS.PAID;
       updatedTxs.push(next); return next;
     }
     return tx;
@@ -633,7 +668,7 @@ function goToClientTx(clientId, isSales) {
   const cl = S.clients.find(c => c.id === clientId);
   S.txSearch      = cl ? cl.name : '';
   S.txTf          = '전체';
-  S.txSf          = isSales ? '미수금' : '미지급금';
+  S.txSf          = isSales ? TX_STATUS.UNPAID : TX_STATUS.UNBILLED;
   S.txPeriodMode  = 'all';
   S.txMonth       = '전체';
   S.view          = 'transactions';
@@ -809,6 +844,22 @@ function setRcvSearch(v) {
   const el = document.getElementById('rcvListArea');
   if (el) el.innerHTML = _buildRcvSections(); else renderContent();
 }
+function setRcvPeriod(p) {
+  S.rcvPeriod = p;
+  // month 선택 시 현재 월로 초기화
+  if (p === 'month') {
+    const d = new Date();
+    S.rcvMonth = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+  }
+  render();
+}
+function rcvMonthMove(delta) {
+  const [y, m] = S.rcvMonth.split('-').map(Number);
+  const d = new Date(y, m - 1 + delta, 1);
+  S.rcvMonth = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+  render();
+}
+
 function toggleExpand(id) { S.cExpanded = S.cExpanded === id ? null : id; renderContent(); }
 function setTxSearch(v) {
   S.txSearch = v;
@@ -966,7 +1017,7 @@ function updateTxTotal(amt, tax) {
 }
 function onTxType(type) {
   const sel = document.getElementById('tf_status'); if (!sel) return;
-  sel.innerHTML = (type === '매출' ? ['미수금','수금완료'] : ['미지급금','지급완료']).map(s => `<option>${esc(s)}</option>`).join('');
+  sel.innerHTML = (type === '매출' ? [TX_STATUS.UNPAID,TX_STATUS.PAID] : [TX_STATUS.UNBILLED,TX_STATUS.BILLED]).map(s => `<option>${esc(s)}</option>`).join('');
 }
 
 // ── SWIPE NAVIGATION ──────────────────────────────────────────────────────────
