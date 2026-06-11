@@ -50,15 +50,18 @@ async function _patchNapumOrder(napumKey, patchObj) {
 }
 
 function _buildNapumPatch(crmTx) {
+  const isPaid = crmTx.status === '수금완료';
   const patch = {
-    isPaid:        crmTx.status === '수금완료',
+    isPaid,
     paidAmount:    crmTx.paidAmount || 0,
-    paidAt:        crmTx.paidAt || new Date().toISOString(),
-    paidMethod:    crmTx.paidMethod || 'cash',
+    // 미수금 복귀 시 null로 명시 — || 연산자로 현재 시각이 채워지는 것을 방지
+    paidAt:        isPaid ? (crmTx.paidAt || new Date().toISOString()) : null,
+    paidMethod:    isPaid ? (crmTx.paidMethod || 'cash') : null,
     updatedAt:     new Date().toISOString(),
     crmControlled: true,  // ★ CRM 우선권 플래그 — 납품 앱이 이 필드들을 덮어쓰지 않음
   };
-  if (crmTx.paidMethodDetail) patch.paidMethodDetail = crmTx.paidMethodDetail;
+  if (isPaid && crmTx.paidMethodDetail) patch.paidMethodDetail = crmTx.paidMethodDetail;
+  else patch.paidMethodDetail = null; // 미수금 복귀 시 명시적 삭제
   return patch;
 }
 
@@ -77,59 +80,64 @@ async function attachNapumListeners() {
   for (const wsId of Object.keys(_napumListeners)) {
     if (!wsIds.has(wsId)) {
       const h = _napumListeners[wsId];
-      if (h.clientsRef)       h.clientsRef.off('value', h.clientsCb);
-      if (h.ordersRef)        h.ordersRef.off('value',  h.ordersCb);
-      if (h.sharedClientsRef) h.sharedClientsRef.off('value');
+      if (h.clientsRef) h.clientsRef.off('value', h.clientsCb);
+      if (h.ordersRef)  h.ordersRef.off('value',  h.ordersCb);
       delete _napumListeners[wsId];
     }
   }
 
   // 새 워크스페이스 리스너 등록
   for (const ws of workspaces) {
-    // _pending(비동기 초기화 중) 또는 실제 핸들러가 이미 있으면 skip
-    const existing = _napumListeners[ws.id];
-    if (existing && (existing._pending || existing.ordersRef)) continue;
-
-    // 중복 등록 방지: 비동기 초기화 시작 전에 마커 설정
-    _napumListeners[ws.id] = { _pending: true };
+    if (_napumListeners[ws.id]) continue;
 
     const wsRef = napumDb.ref('workspaces/' + ws.id);
     let _napumClientsCache = {};
-
-    // ── sharedClients 캐시 ──
-    let _sharedClientsCache = [];
-    const sharedClientsRef = wsRef.child('sharedClients');
-    sharedClientsRef.on('value', sc => {
-      _sharedClientsCache = sc.exists() ? (sc.val() || []) : [];
-    }, e => console.warn('납품 sharedClients 리스너:', e));
+    let _clientsReady = false;  // clients 첫 로드 완료 여부
 
     const clientsRef = wsRef.child('clients');
-    const clientsCb  = snap => { _napumClientsCache = snap.val() || {}; };
-
-    // clients 먼저 로드 후 orders 리스너 등록
+    const clientsCb  = snap => {
+      _napumClientsCache = snap.val() || {};
+      _clientsReady = true;
+    };
+    // clients를 먼저 한 번 fetch해서 캐시 채운 뒤 orders 리스너 등록
     clientsRef.once('value')
       .then(snap => {
         _napumClientsCache = snap.val() || {};
+        _clientsReady = true;
         // 이후 clients 변경 실시간 반영
         clientsRef.on('value', clientsCb, e => console.warn('납품 clients 리스너:', e));
 
+        // clients 준비 완료 후 orders 리스너 등록
+        // ── sharedClients 캐시: 이 워크스페이스가 외부에 공개한 거래처 목록 ──
+        let _sharedClientsCache = null; // null = 아직 미로드, [] = 공개 없음
+        const sharedClientsRef = wsRef.child('sharedClients');
+        // 초기 1회 로드
+        sharedClientsRef.once('value').then(sc => {
+          _sharedClientsCache = sc.exists() ? (sc.val() || []) : [];
+        }).catch(() => { _sharedClientsCache = []; });
+        // 이후 실시간 변경 반영
+        sharedClientsRef.on('value', sc => {
+          _sharedClientsCache = sc.exists() ? (sc.val() || []) : [];
+        }, e => console.warn('납품 sharedClients 리스너:', e));
+
         const ordersRef = wsRef.child('orders');
         const ordersCb  = snap => {
+          if (!_clientsReady) return; // 방어 (사실상 항상 true)
+          // sharedClients 미로드 시 빈 배열로 처리 (공개 없음)
           const allowed = _sharedClientsCache || [];
           _processNapumOrdersSnapshot(ws, snap.val() || {}, _napumClientsCache, allowed);
         };
         ordersRef.on('value', ordersCb, e => console.warn('납품 orders 리스너:', e));
 
-        // 실제 핸들러로 교체 (마커 해제)
-        _napumListeners[ws.id] = { clientsRef, clientsCb, ordersRef, ordersCb, sharedClientsRef };
+        // 핸들러 저장 (detach용)
+        _napumListeners[ws.id] = { clientsRef, clientsCb, ordersRef, ordersCb };
         console.info('[납품 실시간] 리스너 등록 완료:', ws.label, ws.id,
           '| 거래처', Object.keys(_napumClientsCache).length, '명');
       })
-      .catch(e => {
-        // 초기화 실패 시 마커 제거 → 다음 재연결 시 재시도 가능
-        delete _napumListeners[ws.id];
-        console.warn('[납품 실시간] clients 초기 로드 실패:', ws.id, e.message);
-      });
+      .catch(e => console.warn('[납품 실시간] clients 초기 로드 실패:', ws.id, e.message));
+
+    // 자리 확보 (중복 등록 방지용 임시 마커)
+    _napumListeners[ws.id] = { _pending: true };
   }
 }
 
@@ -159,9 +167,8 @@ function _reattachNapumListenersIfNeeded() {
 function detachNapumListeners() {
   for (const wsId of Object.keys(_napumListeners)) {
     const h = _napumListeners[wsId];
-    if (h.clientsRef)       h.clientsRef.off('value', h.clientsCb);
-    if (h.ordersRef)        h.ordersRef.off('value',  h.ordersCb);
-    if (h.sharedClientsRef) h.sharedClientsRef.off('value');
+    if (h.clientsRef) h.clientsRef.off('value', h.clientsCb);
+    if (h.ordersRef)  h.ordersRef.off('value',  h.ordersCb);
     delete _napumListeners[wsId];
   }
 }
@@ -170,21 +177,22 @@ function detachNapumListeners() {
  *  allowed: 이 워크스페이스가 공개 허용한 거래처명 배열 (빈 배열 = 공개 없음)
  */
 function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = []) {
-  // isSelfWs: CRM에 직접 등록한 워크스페이스 → 전체 허용
-  // 외부 ws (공유로 받은): sharedClients에 공개된 거래처만 허용
-  const isSelfWs   = _getWorkspaces().some(w => w.id === ws.id);
+  // allowed가 비어있으면 이 워크스페이스는 아무것도 공개하지 않은 것
+  // → 단, CRM에 직접 등록한 워크스페이스(자기 자신)는 필터 없이 전체 허용
+  const isSelfWs = _getWorkspaces().some(w => w.id === ws.id);
+  const useFilter = !isSelfWs || allowed.length > 0;
   const allowedSet = new Set(allowed);
 
   const orders       = Object.values(ordersObj)
     .filter(o => {
-      if (isSelfWs)              return true;  // 자기 ws → 전체 허용
-      if (allowed.length === 0)  return false; // 외부 ws + 공개 없음 → 전부 차단
-      return allowedSet.has(o.clientName);     // 외부 ws → 허용된 거래처만
+      if (!useFilter) return true;           // 자기 워크스페이스 + 공개 없음 = 전체 허용
+      if (!isSelfWs && allowed.length === 0) return false; // 외부 ws + 공개 없음 = 전부 차단
+      return allowedSet.has(o.clientName);   // 허용된 거래처만
     });
   const napumClients = Object.values(napumClientsObj)
     .filter(nc => {
-      if (isSelfWs)              return true;
-      if (allowed.length === 0)  return false;
+      if (!useFilter) return true;
+      if (!isSelfWs && allowed.length === 0) return false;
       return allowedSet.has(nc.name);
     });
   // napumClient id → 객체 맵
@@ -265,8 +273,9 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
         const next = { ...t, status, amount, tax: 0, memo };
         if (o.items && o.items.length)  next.items            = o.items; else delete next.items;
         if (o.paidAmount)               next.paidAmount       = o.paidAmount; else delete next.paidAmount;
-        if (o.paidAt)                   next.paidAt           = o.paidAt;
-        if (o.paidMethod)               next.paidMethod       = o.paidMethod;
+        // 완납→미수 복귀 시 명시적으로 삭제 (truthy 체크만 하면 이전값이 스프레드로 잔류)
+        if (o.paidAt)                   next.paidAt           = o.paidAt;           else delete next.paidAt;
+        if (o.paidMethod)               next.paidMethod       = o.paidMethod;       else delete next.paidMethod;
         if (o.paidMethodDetail)         next.paidMethodDetail = o.paidMethodDetail; else delete next.paidMethodDetail;
         if (JSON.stringify(next) !== prev) changed = true;
         return next;
@@ -488,9 +497,10 @@ async function doSyncFromDelivery() {
             S.transactions = S.transactions.map(t => {
               if (t.id !== napumIdToCrmId[napumKey]) return t;
               const next = { ...t, status, amount, tax: 0, memo };
-              if (o.paidAmount)       next.paidAmount       = o.paidAmount; else delete next.paidAmount;
-              if (o.paidAt)           next.paidAt           = o.paidAt;
-              if (o.paidMethod)       next.paidMethod       = o.paidMethod;
+              if (o.paidAmount)       next.paidAmount       = o.paidAmount;       else delete next.paidAmount;
+              // 완납→미수 복귀 시 명시적으로 삭제
+              if (o.paidAt)           next.paidAt           = o.paidAt;           else delete next.paidAt;
+              if (o.paidMethod)       next.paidMethod       = o.paidMethod;       else delete next.paidMethod;
               if (o.paidMethodDetail) next.paidMethodDetail = o.paidMethodDetail; else delete next.paidMethodDetail;
               return next;
             });
@@ -581,13 +591,21 @@ async function _loadStatOrders() {
     const napumDb   = _getNapumApp().database();
     const allOrders = [];
 
+    // CRM에 직접 등록된 워크스페이스 ID 목록 (자기 워크스페이스)
+    const selfWsIds = new Set(_getWorkspaces().map(w => w.id));
+
     await Promise.all(workspaces.map(async ws => {
       try {
         // 1) 이 워크스페이스가 공개 허용한 거래처 확인
-        const scSnap       = await napumDb.ref(`workspaces/${ws.id}/sharedClients`).get();
-        const allowedNames = scSnap.exists() ? (scSnap.val() || []) : [];
-        // 공개 목록이 있고, 현재 조회 거래처가 허용 목록에 없으면 스킵
-        if (allowedNames.length > 0 && !allowedNames.includes(sm.clientName)) return;
+        // ※ 자기 워크스페이스(isSelfWs)는 sharedClients 필터 적용 안 함
+        //    (납품앱에서 일부 거래처만 공개 등록해도 자기 내역은 항상 전체 조회)
+        const isSelfWs = selfWsIds.has(ws.id);
+        if (!isSelfWs) {
+          const scSnap       = await napumDb.ref(`workspaces/${ws.id}/sharedClients`).get();
+          const allowedNames = scSnap.exists() ? (scSnap.val() || []) : [];
+          // 공개 목록이 있고, 현재 조회 거래처가 허용 목록에 없으면 스킵
+          if (allowedNames.length > 0 && !allowedNames.includes(sm.clientName)) return;
+        }
 
         const snap   = await napumDb.ref(`workspaces/${ws.id}/orders`).get();
         const orders = Object.values(snap.val() || {});

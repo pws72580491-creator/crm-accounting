@@ -297,12 +297,16 @@ async function _refetchNapumOrderAfterPatch(napumKey) {
       if (t._napumId !== napumKey) return t;
       const prev  = JSON.stringify(t);
       const next  = { ...t,
-        status:    order.isPaid ? (t.status === '미지급금' ? '지급완료' : '수금완료') : t.status,
+        // order.isPaid=false 시 상태를 미수금으로 명시 (이전 상태 유지하지 않음)
+        status:    order.isPaid ? (t.status === '미지급금' ? '지급완료' : '수금완료') : '미수금',
         paidAmount: order.paidAmount ?? t.paidAmount,
-        paidAt:    order.paidAt     ?? t.paidAt,
-        paidMethod: order.paidMethod ?? t.paidMethod,
+        // null이 오면 명시적으로 삭제 — ?? 연산자는 null을 이전 값으로 fallback시킴
+        paidAt:    order.paidAt  !== undefined ? order.paidAt    : t.paidAt,
+        paidMethod: order.paidMethod !== undefined ? order.paidMethod : t.paidMethod,
       };
-      if (order.paidMethodDetail) next.paidMethodDetail = order.paidMethodDetail;
+      // 완납 취소 시 paidAt, paidMethod 명시적 삭제
+      if (!order.isPaid) { delete next.paidAt; delete next.paidMethod; delete next.paidMethodDetail; }
+      else if (order.paidMethodDetail) next.paidMethodDetail = order.paidMethodDetail;
       if (JSON.stringify(next) !== prev) changed = true;
       return next;
     });
