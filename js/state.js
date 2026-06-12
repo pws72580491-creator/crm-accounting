@@ -159,10 +159,11 @@ function _attachListeners() {
     // → CRM 로컬 값과 병합 시 결제 필드를 서버 값으로 우선 반영
     const merged = incoming.map(inTx => {
       if (!inTx.dlControlled) return inTx;
-      // 기존 로컬 거래에서 dlControlled가 없던 것이면 서버값 그대로 사용
+      // 로컬 거래를 base로 사용해 _napumId, memo, clientId 등 CRM 전용 필드 보존
+      // (local 없으면 서버값 그대로 사용)
       const local = S.transactions.find(t => t.id === inTx.id);
-      if (!local || local.dlControlled) return inTx;
-      // 로컬에 있었지만 거래장이 결제 처리 → 결제 필드만 서버로 덮어씀
+      if (!local) return inTx;
+      // 거래장이 결제 처리 → 로컬 base에 결제 필드만 덮어씀 (local.dlControlled 여부 무관)
       return {
         ...local,
         status:            inTx.status,

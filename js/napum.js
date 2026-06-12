@@ -29,18 +29,16 @@ async function _patchNapumOrder(napumKey, patchObj) {
       console.warn('납품앱 order 없음:', wsId, orderId);
       return true; // CRM은 이미 반영됨
     }
-    await ref.update(patchObj);
-    // workspace 루트에 writtenBy + lastUpdated 기록 → 납품 앱 타임스탬프 필터 우회
-    try {
-      const wsRef = _getNapumApp().database().ref(`workspaces/${wsId}`);
-      await wsRef.update({
-        writtenBy:   'CRM_EXTERNAL',
-        lastUpdated: new Date(Date.now() + 1500).toISOString(),
-        _crmPatchAt: new Date().toISOString(),
-      });
-    } catch (e2) {
-      console.warn('납품 workspace 메타 업데이트 실패 (패치는 성공):', e2.message);
-    }
+    // order 패치 + workspace 루트 writtenBy를 단일 update()로 원자적 처리
+    // (분리 시 납품앱이 writtenBy 없는 스냅샷을 먼저 수신해 타임스탬프 필터에 막힐 수 있음)
+    const atomicPatch = {};
+    Object.keys(patchObj).forEach(k => {
+      atomicPatch[`workspaces/${wsId}/orders/${orderId}/${k}`] = patchObj[k];
+    });
+    atomicPatch[`workspaces/${wsId}/writtenBy`]    = 'CRM_EXTERNAL';
+    atomicPatch[`workspaces/${wsId}/lastUpdated`]  = new Date(Date.now() + 1500).toISOString();
+    atomicPatch[`workspaces/${wsId}/_crmPatchAt`]  = new Date().toISOString();
+    await napumDb.ref('/').update(atomicPatch);
     console.info('납품 역방향 패치 성공:', napumKey, patchObj);
     return true;
   } catch (e) {
@@ -188,7 +186,10 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
   // allowed가 비어있으면 이 워크스페이스는 아무것도 공개하지 않은 것
   // → 단, CRM에 직접 등록한 워크스페이스(자기 자신)는 필터 없이 전체 허용
   const isSelfWs = _getWorkspaces().some(w => w.id === ws.id);
-  const useFilter = !isSelfWs || allowed.length > 0;
+  // ※ 자기 워크스페이스(isSelfWs)는 sharedClients 필터 적용 안 함
+  //    (납품앱에서 "공개 거래처"는 다른 사람 CRM이 볼 수 있는 항목일 뿐,
+  //     내 CRM 동기화에는 항상 전체 거래처/주문이 실시간 반영되어야 함)
+  const useFilter = !isSelfWs;
   const allowedSet = new Set(allowed);
 
   const orders       = Object.values(ordersObj)
@@ -310,7 +311,10 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
     lsSet('crm_clients', S.clients);
     lsSet('crm_tx', S.transactions);
     lsSet('crm_napum_synced', [...synced]);
-    (async () => { await saveC(); await saveTX(); })();
+    (async () => {
+      try { await saveC(); await saveTX(); }
+      catch (e) { console.error('[납품싱크] Firebase 저장 실패:', e); showToast('⚠️ CRM 저장 실패 (로컬은 유지됨)'); }
+    })();
     render();
     // 자기 패치 echo인 경우 토스트 생략 (이미 _afterNapumPatch에서 표시함)
     const isOwnEcho = orders.some(o => _napumOwnPatchKeys?.has(`${ws.id}:${o.id}`));
@@ -421,7 +425,9 @@ async function doSyncFromDelivery() {
         const allowedSet     = new Set(allowedClients);
         // CRM에 직접 등록한 자기 워크스페이스는 전체 허용, 공유로 받은 ws는 필터 적용
         const isSelfWs   = true; // doSync는 항상 자기가 등록한 ws만 처리
-        const useFilter  = allowedClients.length > 0;
+        // ※ 자기 워크스페이스는 sharedClients(공개 허용 목록) 필터를 적용하지 않음
+        //    (해당 목록은 다른 사람 CRM에게 노출할 항목일 뿐, 내 CRM 동기화 범위와는 무관)
+        const useFilter  = false;
 
         if (!csSnap.exists() && !ordSnap.exists()) {
           perWorkspace.push({ ...ws, error:true, newTx:0 });
