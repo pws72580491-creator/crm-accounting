@@ -91,72 +91,84 @@ async function attachNapumListeners() {
   for (const ws of workspaces) {
     if (_napumListeners[ws.id]) continue;
 
+    // ★ 비동기 시작 전 즉시 마커 설정 (중복 등록 방지)
+    _napumListeners[ws.id] = { _pending: true };
+
     const wsRef = napumDb.ref('workspaces/' + ws.id);
     let _napumClientsCache = {};
-    let _clientsReady = false;  // clients 첫 로드 완료 여부
 
-    const clientsRef = wsRef.child('clients');
-    const clientsCb  = snap => {
-      _napumClientsCache = snap.val() || {};
-      _clientsReady = true;
+    const clientsRef     = wsRef.child('clients');
+    const clientsCb      = snap => { _napumClientsCache = snap.val() || {}; };
+
+    // sharedClients
+    let _sharedClientsCache = [];
+    const sharedClientsRef = wsRef.child('sharedClients');
+    const sharedClientsCb  = sc => {
+      _sharedClientsCache = sc.exists() ? (sc.val() || []) : [];
     };
-    // clients를 먼저 한 번 fetch해서 캐시 채운 뒤 orders 리스너 등록
+    sharedClientsRef.on('value', sharedClientsCb,
+      e => console.warn('납품 sharedClients 리스너:', e));
+
+    // clients 초기 로드 후 orders 리스너 등록
     clientsRef.once('value')
       .then(snap => {
         _napumClientsCache = snap.val() || {};
-        _clientsReady = true;
-        // 이후 clients 변경 실시간 반영
         clientsRef.on('value', clientsCb, e => console.warn('납품 clients 리스너:', e));
-
-        // ── sharedClients 실시간 리스너 (on만 사용 — on은 즉시 현재값 콜백) ──
-        let _sharedClientsCache = [];
-        const sharedClientsRef = wsRef.child('sharedClients');
-        const sharedClientsCb  = sc => {
-          _sharedClientsCache = sc.exists() ? (sc.val() || []) : [];
-        };
-        sharedClientsRef.on('value', sharedClientsCb,
-          e => console.warn('납품 sharedClients 리스너:', e));
 
         const ordersRef = wsRef.child('orders');
         const ordersCb  = snap => {
-          const allowed = _sharedClientsCache;
-          _processNapumOrdersSnapshot(ws, snap.val() || {}, _napumClientsCache, allowed);
+          _processNapumOrdersSnapshot(ws, snap.val() || {}, _napumClientsCache, _sharedClientsCache);
         };
         ordersRef.on('value', ordersCb, e => console.warn('납품 orders 리스너:', e));
 
-        // 핸들러 저장 (detach용) — sharedClientsRef 포함
+        // ★ 마커 → 실제 핸들러로 교체
         _napumListeners[ws.id] = { clientsRef, clientsCb, sharedClientsRef, sharedClientsCb, ordersRef, ordersCb };
         console.info('[납품 실시간] 리스너 등록 완료:', ws.label, ws.id,
           '| 거래처', Object.keys(_napumClientsCache).length, '명');
       })
-      .catch(e => console.warn('[납품 실시간] clients 초기 로드 실패:', ws.id, e.message));
-
-    // 자리 확보 (중복 등록 방지용 임시 마커)
-    _napumListeners[ws.id] = { _pending: true };
+      .catch(e => {
+        // 초기화 실패 시 마커 제거 → 다음 재연결 때 재시도
+        delete _napumListeners[ws.id];
+        console.warn('[납품 실시간] 초기 로드 실패, 다음 재연결 시 재시도:', ws.id, e.message);
+      });
   }
 }
 
 // ── 납품 리스너 재연결 (백그라운드 복귀 / 네트워크 복구) ─────────────────────
-function _reattachNapumListenersIfNeeded() {
+// force=true 이면 기존 리스너 전부 해제 후 재연결 (네트워크 복귀 강제 새로고침용)
+function _reattachNapumListenersIfNeeded(force = false) {
   const workspaces = _getWorkspaces();
   if (!workspaces.length) return;
 
-  // _pending 마커이거나 ordersRef가 없는 ws는 리스너가 실제로 안 붙은 것
+  if (force) {
+    // 전체 리스너 해제 후 재연결
+    detachNapumListeners();
+    console.info('[납품] 강제 재연결');
+    attachNapumListeners().catch(e => console.warn('[납품] 재연결 실패:', e));
+    return;
+  }
+
+  // 불완전한 리스너만 재연결
   const needReattach = workspaces.some(ws => {
     const h = _napumListeners[ws.id];
     return !h || h._pending || !h.ordersRef;
   });
 
   if (needReattach) {
-    // 불완전한 항목만 제거 후 재등록
     workspaces.forEach(ws => {
       const h = _napumListeners[ws.id];
-      if (h && (h._pending || !h.ordersRef)) {
-        delete _napumListeners[ws.id];
-      }
+      if (h && (h._pending || !h.ordersRef)) delete _napumListeners[ws.id];
     });
     attachNapumListeners().catch(e => console.warn('[납품] 재연결 실패:', e));
   }
+}
+
+// 수동 새로고침: 리스너 강제 재연결 + 최신 데이터 pull
+async function refreshNapumListeners() {
+  showToast('🔄 납품 데이터 새로고침 중…');
+  _reattachNapumListenersIfNeeded(true);
+  // 리스너 재연결 후 Firebase on()이 즉시 현재값을 콜백하므로 1.5초 후 완료 알림
+  setTimeout(() => showToast('✅ 납품 데이터 갱신 완료'), 1500);
 }
 
 function detachNapumListeners() {
@@ -798,6 +810,14 @@ function buildSyncModal() {
           <button onclick="closeSyncModal()" style="background:none;border:none;cursor:pointer;color:#94a3b8;">${I.x}</button>
         </div>
         <div style="padding:18px;">${body}</div>
+        <!-- 실시간 새로고침 버튼 -->
+        ${workspaces.length > 0 && !isDone ? `
+        <div style="padding:0 18px 8px;">
+          <button onclick="refreshNapumListeners();closeSyncModal();"
+            style="width:100%;padding:8px;border:1.5px dashed #d97706;background:#fffbeb;color:#b45309;border-radius:8px;font-size:12px;font-weight:600;cursor:pointer;">
+            🔄 실시간 연결 새로고침 (반영 안 될 때)
+          </button>
+        </div>` : ''}
         <div style="display:flex;gap:8px;padding:0 18px 18px;">
           ${isDone
             ? `<button onclick="closeSyncModal()" style="flex:1;padding:10px;border:none;background:#d97706;color:#fff;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">확인</button>`

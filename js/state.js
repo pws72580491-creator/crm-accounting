@@ -407,25 +407,25 @@ async function loadData() {
   if (!window._napumLifecycleBound) {
     window._napumLifecycleBound = true;
 
-    // 안드로이드 백그라운드 복귀 감지
+    // 안드로이드 백그라운드 복귀 감지 → 강제 재연결
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
-        console.info('[납품] 포그라운드 복귀 → 리스너 상태 확인');
-        setTimeout(() => _reattachNapumListenersIfNeeded(), 800);
+        console.info('[납품] 포그라운드 복귀 → 리스너 강제 재연결');
+        setTimeout(() => _reattachNapumListenersIfNeeded(true), 800);
       }
     });
 
-    // 네트워크 재연결 감지
+    // 네트워크 재연결 감지 → 강제 재연결
     window.addEventListener('online', () => {
-      console.info('[납품] 네트워크 복구 → 리스너 재연결 시도');
-      setTimeout(() => _reattachNapumListenersIfNeeded(), 1000);
+      console.info('[납품] 네트워크 복구 → 리스너 강제 재연결');
+      setTimeout(() => _reattachNapumListenersIfNeeded(true), 1000);
     });
 
-    // pageshow: iOS Safari 뒤로가기 캐시 복귀
+    // pageshow: iOS Safari 뒤로가기 캐시 복귀 → 강제 재연결
     window.addEventListener('pageshow', e => {
       if (e.persisted) {
-        console.info('[납품] pageshow(캐시 복귀) → 리스너 재연결');
-        setTimeout(() => _reattachNapumListenersIfNeeded(), 800);
+        console.info('[납품] pageshow(캐시 복귀) → 리스너 강제 재연결');
+        setTimeout(() => _reattachNapumListenersIfNeeded(true), 800);
       }
     });
   }
