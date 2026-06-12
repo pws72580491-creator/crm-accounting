@@ -403,6 +403,12 @@ async function loadData() {
   // 5) 납품앱 실시간 리스너
   attachNapumListeners().catch(e => console.warn('납품 리스너 시작 실패:', e));
 
+  // 5-2) 앱 시작 시 백그라운드 자동 동기화 (이전 누락 데이터 보완)
+  //      실시간 리스너 등록 완료 후 2초 뒤 실행
+  setTimeout(() => {
+    _autoSyncOnStartup().catch(e => console.warn('납품 자동동기화 실패:', e));
+  }, 2000);
+
   // 5-1) 백그라운드 복귀 / 네트워크 복구 시 리스너 재연결
   if (!window._napumLifecycleBound) {
     window._napumLifecycleBound = true;
