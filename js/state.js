@@ -2,14 +2,14 @@
 let S = {
   view: 'dashboard',
   // 거래처
-  clients: [], cSearch: '', cFilter: '전체', cWsFilter: '전체', cGroupFilter: '전체', cExpanded: null, // ★ v89 납품 그룹 필터
+  clients: [], cSearch: '', cFilter: '전체', cWsFilter: '전체', cGroupFilter: '전체', cExpanded: null,
   // 거래
   transactions: [], txSearch: '', txTf: '전체', txSf: '전체', txWsFilter: '전체',
   txMonth: null, txPeriodMode: 'daily', txDate: null, txWeek: null,
   // UI
   drawerOpen: false, rcvSearch: '',
   rcvPeriod: 'month',   // 'month' | 'quarter' | 'all'
-  rcvMonth:  (() => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; })(),
+  rcvMonth: (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; })(),
   // 대시보드 PIN 잠금
   dashLocked: false,
 };
@@ -22,24 +22,25 @@ let M = {
 };
 
 // ── Firebase ──────────────────────────────────────────────────────────────────
-let db       = null;
-let DB_ONLINE = false;
-let _fbReady  = false;
+let db        = null;
+let DB_ONLINE  = false;
+let _fbReady   = false;
 
 function _syncBadgeHTML() {
   const base = 'margin-top:6px;text-align:center;font-size:10px;font-weight:600;padding:3px 0;border-radius:6px;border:1px solid ';
-  if (!_fbReady)  return `<div id="syncBadge" style="${base}#e2e8f0;background:#f1f5f9;color:#94a3b8;">● 로컬 모드</div>`;
-  if (DB_ONLINE)  return `<div id="syncBadge" style="${base}#86efac;background:#dcfce7;color:#16a34a;">● 동기화됨</div>`;
+  if (!_fbReady) return `<div id="syncBadge" style="${base}#e2e8f0;background:#f1f5f9;color:#94a3b8;">● 로컬 모드</div>`;
+  if (DB_ONLINE) return `<div id="syncBadge" style="${base}#86efac;background:#dcfce7;color:#16a34a;">● 동기화됨</div>`;
   return `<div id="syncBadge" style="${base}#fcd34d;background:#fef3c7;color:#b45309;">● 오프라인</div>`;
 }
+
 function updateSyncBadge() {
   const el = document.getElementById('syncBadge');
   if (!el) return;
   const tmp = document.createElement('div');
   tmp.innerHTML = _syncBadgeHTML();
   const newEl = tmp.firstElementChild;
-  el.style.cssText  = newEl.style.cssText;
-  el.textContent    = newEl.textContent;
+  el.style.cssText = newEl.style.cssText;
+  el.textContent   = newEl.textContent;
 }
 
 function loadScript(src) {
@@ -155,24 +156,23 @@ function _attachListeners() {
 
   _offTX = db.ref('transactions').on('value', snap => {
     const incoming = toArr(snap.val());
-    // dlControlled 플래그가 있는 거래는 거래장이 마지막으로 결제 처리한 것
+    // dlControlled 플래그가 있는 거래는 납품 관리 앱이 마지막으로 결제 처리한 것
     // → CRM 로컬 값과 병합 시 결제 필드를 서버 값으로 우선 반영
     const merged = incoming.map(inTx => {
       if (!inTx.dlControlled) return inTx;
       // 로컬 거래를 base로 사용해 _napumId, memo, clientId 등 CRM 전용 필드 보존
-      // (local 없으면 서버값 그대로 사용)
       const local = S.transactions.find(t => t.id === inTx.id);
       if (!local) return inTx;
-      // 거래장이 결제 처리 → 로컬 base에 결제 필드만 덮어씀 (local.dlControlled 여부 무관)
+      // 납품 관리 앱이 결제 처리 → 로컬 base에 결제 필드만 덮어씀 (local.dlControlled 여부 무관)
       return {
         ...local,
-        status:            inTx.status,
-        paidAmount:        inTx.paidAmount,
-        paidAt:            inTx.paidAt,
-        paidMethod:        inTx.paidMethod,
-        paidMethodDetail:  inTx.paidMethodDetail,
-        discount:          inTx.discount,
-        dlControlled:      true,
+        status:           inTx.status,
+        paidAmount:       inTx.paidAmount,
+        paidAt:           inTx.paidAt,
+        paidMethod:       inTx.paidMethod,
+        paidMethodDetail: inTx.paidMethodDetail,
+        discount:         inTx.discount,
+        dlControlled:     true,
       };
     });
     if (JSON.stringify(merged) === JSON.stringify(S.transactions)) return;
@@ -211,13 +211,12 @@ function deleteTxFn(id) {
 
 /** 상태 토글 (배지 클릭) */
 function toggleStatus(txId) {
-  const next = TX_STATUS_NEXT;
   let updatedTx = null;
   S.transactions = S.transactions.map(t => {
     if (t.id !== txId) return t;
-    const newStatus = next[t.status] || t.status;
+    const newStatus = TX_STATUS_NEXT[t.status] || t.status;
     const isFull    = isTxComplete(newStatus);
-    const isPending = newStatus === TX_STATUS.UNPAID   || newStatus === TX_STATUS.UNBILLED;
+    const isPending = newStatus === TX_STATUS.UNPAID || newStatus === TX_STATUS.UNBILLED;
     const u = { ...t, status: newStatus };
     if (isFull && !u.paidAmount) {
       u.paidAmount = t.amount + t.tax;
@@ -227,7 +226,7 @@ function toggleStatus(txId) {
       delete u.paidAmount; delete u.paidAt;
       delete u.paidMethod; delete u.paidMethodDetail;
     }
-    delete u.dlControlled; // CRM이 직접 처리 → 거래장 우선권 해제
+    delete u.dlControlled; // CRM이 직접 처리 → 납품 관리 앱 우선권 해제
     updatedTx = u; return u;
   });
   if (updatedTx) _saveOneTx(updatedTx); else saveTX();
@@ -248,7 +247,7 @@ function completeStatus(txId, status) {
       u.paidAt     = new Date().toISOString();
       u.paidMethod = u.paidMethod || 'cash';
     }
-    delete u.dlControlled; // CRM이 직접 처리 → 거래장 우선권 해제
+    delete u.dlControlled; // CRM이 직접 처리 → 납품 관리 앱 우선권 해제
     updatedTx = u; return u;
   });
   if (updatedTx) _saveOneTx(updatedTx); else saveTX();
@@ -257,7 +256,10 @@ function completeStatus(txId, status) {
   _afterNapumPatch(updatedTx);
 }
 
-/** 납품 역방향 패치 공통 헬퍼 (중복 제거) */
+/** CRM이 직접 패치한 napumId 목록 (Firebase echo 구분용) */
+const _napumOwnPatchKeys = new Set();
+
+/** 납품 역방향 패치 공통 헬퍼 */
 function _afterNapumPatch(tx, delayMs = 0) {
   if (!tx || !tx._napumId) return;
   const dopatch = () => {
@@ -266,7 +268,7 @@ function _afterNapumPatch(tx, delayMs = 0) {
       .then(ok => {
         if (ok) {
           showToast('📦 납품 관리에도 반영됨');
-          // 패치 성공 후 납품앱 Firebase에서 즉시 re-fetch해 CRM UI 갱신
+          // 패치 성공 후 납품 앱 Firebase에서 즉시 re-fetch해 CRM UI 갱신
           _refetchNapumOrderAfterPatch(tx._napumId);
         } else {
           _napumOwnPatchKeys.delete(tx._napumId);
@@ -281,9 +283,6 @@ function _afterNapumPatch(tx, delayMs = 0) {
   if (delayMs > 0) setTimeout(dopatch, delayMs); else dopatch();
 }
 
-/** CRM이 직접 패치한 napumId 목록 (Firebase echo 구분용) */
-const _napumOwnPatchKeys = new Set();
-
 /** 패치 후 Firebase에서 해당 order를 즉시 re-fetch해 CRM UI 갱신 */
 async function _refetchNapumOrderAfterPatch(napumKey) {
   if (!napumKey || !napumKey.includes(':')) return;
@@ -295,30 +294,31 @@ async function _refetchNapumOrderAfterPatch(napumKey) {
     const napumDb = _getNapumApp().database();
     const snap    = await napumDb.ref(`workspaces/${wsId}/orders/${orderId}`).once('value');
     if (!snap.exists()) return;
-    const order   = snap.val();
-    // CRM 상태에서 해당 tx 직접 갱신
+    const order = snap.val();
     let changed = false;
     S.transactions = S.transactions.map(t => {
       if (t._napumId !== napumKey) return t;
-      const prev  = JSON.stringify(t);
-      const next  = { ...t,
+      const prev = JSON.stringify(t);
+      const next = {
+        ...t,
         // order.isPaid=false 시 상태를 미수금으로 명시 (이전 상태 유지하지 않음)
-        status:    order.isPaid ? (t.status === TX_STATUS.UNBILLED ? TX_STATUS.BILLED : TX_STATUS.PAID) : TX_STATUS.UNPAID,
-        paidAmount: order.paidAmount ?? t.paidAmount,
-        // null이 오면 명시적으로 삭제 — ?? 연산자는 null을 이전 값으로 fallback시킴
-        paidAt:    order.paidAt  !== undefined ? order.paidAt    : t.paidAt,
-        paidMethod: order.paidMethod !== undefined ? order.paidMethod : t.paidMethod,
+        status:     order.isPaid
+          ? (t.status === TX_STATUS.UNBILLED ? TX_STATUS.BILLED : TX_STATUS.PAID)
+          : TX_STATUS.UNPAID,
+        paidAmount: order.paidAmount  !== undefined ? order.paidAmount  : t.paidAmount,
+        paidAt:     order.paidAt      !== undefined ? order.paidAt      : t.paidAt,
+        paidMethod: order.paidMethod  !== undefined ? order.paidMethod  : t.paidMethod,
       };
-      // 완납 취소 시 paidAt, paidMethod 명시적 삭제
-      if (!order.isPaid) { delete next.paidAt; delete next.paidMethod; delete next.paidMethodDetail; }
-      else if (order.paidMethodDetail) next.paidMethodDetail = order.paidMethodDetail;
+      // 완납 취소 시 결제 관련 필드 명시적 삭제
+      if (!order.isPaid) {
+        delete next.paidAt; delete next.paidMethod; delete next.paidMethodDetail;
+      } else if (order.paidMethodDetail) {
+        next.paidMethodDetail = order.paidMethodDetail;
+      }
       if (JSON.stringify(next) !== prev) changed = true;
       return next;
     });
-    if (changed) {
-      lsSet('crm_tx', S.transactions);
-      render();
-    }
+    if (changed) { lsSet('crm_tx', S.transactions); render(); }
     // 자기 패치 echo 허용 처리 완료 후 제거
     setTimeout(() => _napumOwnPatchKeys.delete(napumKey), 3000);
   } catch (e) {
@@ -329,7 +329,6 @@ async function _refetchNapumOrderAfterPatch(napumKey) {
 
 // ── 데이터 로드 ───────────────────────────────────────────────────────────────
 async function loadData() {
-  // 상태 초기화
   S.txMonth = thisMonth();
   S.txDate  = localDate();
   S.txWeek  = null;
@@ -358,7 +357,7 @@ async function loadData() {
     lsSet('crm_napum_synced', []);
     lsSet('crm_napum_void_migrated_v1', true);
     lsSet(_syncedMigKey, true);
-    console.info('[마이그레이션3] 타인거래 거래처 자동생성 포함 재동기화');
+    console.info('[마이그레이션2] 타인거래 거래처 자동생성 포함 재동기화');
   }
 
   try {
@@ -398,13 +397,13 @@ async function loadData() {
     console.warn('RTDB 로드 실패, 로컬 캐시 사용:', e.message);
   }
 
-  // 4) 실시간 리스너
+  // 4) CRM 실시간 리스너
   _attachListeners();
 
-  // 5) 납품앱 실시간 리스너
+  // 5) 납품 앱 실시간 리스너
   attachNapumListeners().catch(e => console.warn('납품 리스너 시작 실패:', e));
 
-  // 5-1) 백그라운드 복귀 / 네트워크 복구 시 리스너 재연결
+  // 5-1) 백그라운드 복귀 / 네트워크 복구 시 리스너 재연결 (최초 1회만 등록)
   if (!window._napumLifecycleBound) {
     window._napumLifecycleBound = true;
 
@@ -446,10 +445,13 @@ async function loadData() {
 
 // ── Export / Import ───────────────────────────────────────────────────────────
 function exportData() {
-  const data = { exportedAt: new Date().toISOString(), version: 1, clients: S.clients, transactions: S.transactions };
-  const blob  = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const url   = URL.createObjectURL(blob);
-  const a     = document.createElement('a');
+  const data = {
+    exportedAt: new Date().toISOString(), version: 1,
+    clients: S.clients, transactions: S.transactions,
+  };
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
   a.href = url; a.download = `crm-data-${localDate()}.json`; a.style.display = 'none';
   document.body.appendChild(a); a.click();
   setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 300);
