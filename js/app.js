@@ -39,15 +39,13 @@ function sidebarInner(onClose = '') {
         </button>
         <div style="display:none;margin-top:6px;max-height:220px;overflow-y:auto;font-size:10px;color:#94a3b8;line-height:1.6;">
           <div style="margin-bottom:8px;">
-            <span style="color:#34d399;font-weight:700;">v6.1</span>
+            <span style="color:#34d399;font-weight:700;">v7.0</span>
             <ul style="margin:3px 0 0 12px;padding:0;list-style:disc;">
-              <li>모든 버전 통합 — 누락 없는 완전체 빌드</li>
-              <li>납품 역방향 패치 원자적 처리 (분리 update → 단일 update)</li>
-              <li>dlControlled 병합 로직 개선 (local.dlControlled 여부 무관하게 결제필드 덮어씀)</li>
-              <li>Firebase 저장 실패 시 에러 토스트 + 로컬 보존 보장</li>
-              <li>백그라운드/네트워크 복귀 시 납품 리스너 강제 재연결</li>
-              <li>sharedClientsRef detach 메모리 정리</li>
-              <li>코드 정리 — 미사용 변수·중복 로직 제거</li>
+              <li>Write Queue 도입 — 오프라인 저장 후 복구 시 자동 재전송</li>
+              <li>_fbWrite() 래퍼 — 네트워크 오류 시 1.5초 재시도 + 대기열</li>
+              <li>_saveOneClient/_saveOneTx 원본 객체 불변성 보장 (payload 분리)</li>
+              <li>납품 앱 리스너 재연결 개선 (force 강제 재연결)</li>
+              <li>paidAmount 병합 시 undefined 처리 안전화</li>
             </ul>
           </div>
           <div style="margin-bottom:8px;">
@@ -55,8 +53,8 @@ function sidebarInner(onClose = '') {
             <ul style="margin:3px 0 0 12px;padding:0;list-style:disc;">
               <li>채권·채무 기간 필터 (월별/분기별/전체) + 좌우 이동</li>
               <li>TX_STATUS 상수화 — 상태 문자열 직접 비교 제거</li>
-              <li>updatedAt 자동 기록 (저장 시마다)</li>
-              <li>납품 앱 실시간 리스너 _pending 마커 버그 수정</li>
+              <li>updatedAt 자동 기록</li>
+              <li>납품앱 실시간 리스너 _pending 마커 버그 수정</li>
             </ul>
           </div>
           <div style="margin-bottom:8px;">
@@ -869,6 +867,15 @@ function rcvMonthMove(delta) {
   const d = new Date(y, m - 1 + delta, 1);
   S.rcvMonth = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
   render();
+}
+function setRcvSort(v) {
+  S.rcvSort = v;
+  // 정렬 버튼 상태 갱신
+  const sortEl = document.getElementById('rcvSortBtns');
+  if (sortEl) sortEl.outerHTML = _buildRcvSortBtns();
+  // 목록 갱신
+  const listEl = document.getElementById('rcvListArea');
+  if (listEl) listEl.innerHTML = _buildRcvSections(); else renderContent();
 }
 
 function toggleExpand(id) { S.cExpanded = S.cExpanded === id ? null : id; renderContent(); }

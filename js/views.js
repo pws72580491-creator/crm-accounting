@@ -736,6 +736,23 @@ function _rcvFilterByPeriod(items) {
   });
 }
 
+function _buildRcvSortBtns() {
+  const sortOpts = [
+    { k: 'amount', label: '금액순' },
+    { k: 'name',   label: '가나다순' },
+    { k: 'date',   label: '날짜순' },
+  ];
+  const cur = S.rcvSort || 'amount';
+  return `<div id="rcvSortBtns" style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+    <span style="font-size:11px;color:#94a3b8;flex-shrink:0;">정렬</span>
+    ${sortOpts.map(o => {
+      const a = cur === o.k;
+      return `<button onclick="setRcvSort('${o.k}')"
+        style="padding:4px 10px;border-radius:20px;font-size:11px;font-weight:600;cursor:pointer;border:1px solid ${a?'#d97706':'#e2e8f0'};background:${a?'#fef3c7':'#f8fafc'};color:${a?'#b45309':'#64748b'};">${o.label}</button>`;
+    }).join('')}
+  </div>`;
+}
+
 function buildReceivables() {
   const p   = S.rcvPeriod;
   const q   = S.rcvSearch || '';
@@ -757,6 +774,8 @@ function buildReceivables() {
       <span style="font-size:13px;font-weight:700;color:#0f172a;min-width:90px;text-align:center;">${_rcvPeriodLabel()}</span>
       <button onclick="rcvMonthMove(1)" ${isMaxMonth ? 'disabled' : ''} style="width:30px;height:30px;border-radius:50%;border:1px solid #e2e8f0;background:${isMaxMonth?'#f8fafc':'#fff'};font-size:16px;cursor:${isMaxMonth?'default':'pointer'};display:flex;align-items:center;justify-content:center;color:${isMaxMonth?'#cbd5e1':'#0f172a'};">›</button>
     </div>` : '';
+
+  const sortHtml = _buildRcvSortBtns();
 
   const allTx  = _rcvFilterByPeriod(S.transactions);
   const rec    = allTx.filter(t => t.status === TX_STATUS.UNPAID);
@@ -793,10 +812,13 @@ function buildReceivables() {
         ${navHtml}
       </div>
 
-      <!-- 검색 -->
-      <div style="position:relative;">
-        <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:#94a3b8;pointer-events:none;">${I.search}</span>
-        <input id="rcvSearchInput" value="${esc(q)}" oninput="setRcvSearch(this.value)" onkeydown="if(event.key==='Enter'||event.keyCode===13){this.blur();}" enterkeyhint="search" placeholder="거래처 검색… (초성 가능)" style="${ISX}padding-left:30px;" ${FB}>
+      <!-- 검색 + 정렬 -->
+      <div style="display:flex;flex-direction:column;gap:8px;">
+        <div style="position:relative;">
+          <span style="position:absolute;left:10px;top:50%;transform:translateY(-50%);color:#94a3b8;pointer-events:none;">${I.search}</span>
+          <input id="rcvSearchInput" value="${esc(q)}" oninput="setRcvSearch(this.value)" onkeydown="if(event.key==='Enter'||event.keyCode===13){this.blur();}" enterkeyhint="search" placeholder="거래처 검색… (초성 가능)" style="${ISX}padding-left:30px;" ${FB}>
+        </div>
+        ${sortHtml}
       </div>
 
       <!-- 합계 카드 -->
@@ -830,9 +852,21 @@ function _buildRcvSections() {
       if (!map[t.clientId]) map[t.clientId] = { clientId: t.clientId, txs: [] };
       map[t.clientId].txs.push(t);
     });
-    return Object.values(map).sort((a, b) =>
-      b.txs.reduce((s,t)=>s+_txRemain(t),0) - a.txs.reduce((s,t)=>s+_txRemain(t),0)
-    );
+    const sort = S.rcvSort || 'amount';
+    return Object.values(map).sort((a, b) => {
+      if (sort === 'name') {
+        const na = S.clients.find(c => c.id === a.clientId)?.name || '';
+        const nb = S.clients.find(c => c.id === b.clientId)?.name || '';
+        return na.localeCompare(nb, 'ko');
+      }
+      if (sort === 'date') {
+        const da = a.txs.map(t => t.date).sort()[0] || '';
+        const db = b.txs.map(t => t.date).sort()[0] || '';
+        return da.localeCompare(db);
+      }
+      // amount (기본): 금액 내림차순
+      return b.txs.reduce((s,t)=>s+_txRemain(t),0) - a.txs.reduce((s,t)=>s+_txRemain(t),0);
+    });
   }
 
   function sectionHtml(title, items, color, bg, bd, isSales) {

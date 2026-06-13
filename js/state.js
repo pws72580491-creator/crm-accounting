@@ -10,6 +10,7 @@ let S = {
   drawerOpen: false, rcvSearch: '',
   rcvPeriod: 'month',   // 'month' | 'quarter' | 'all'
   rcvMonth: (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; })(),
+  rcvSort: 'amount',    // 'amount' | 'name' | 'date'
   // 대시보드 PIN 잠금
   dashLocked: false,
 };
@@ -28,11 +29,10 @@ let _fbReady   = false;
 
 function _syncBadgeHTML() {
   const base = 'margin-top:6px;text-align:center;font-size:10px;font-weight:600;padding:3px 0;border-radius:6px;border:1px solid ';
-  if (!_fbReady) return `<div id="syncBadge" style="${base}#e2e8f0;background:#f1f5f9;color:#94a3b8;">● 로컬 모드</div>`;
-  if (DB_ONLINE) return `<div id="syncBadge" style="${base}#86efac;background:#dcfce7;color:#16a34a;">● 동기화됨</div>`;
+  if (!_fbReady)  return `<div id="syncBadge" style="${base}#e2e8f0;background:#f1f5f9;color:#94a3b8;">● 로컬 모드</div>`;
+  if (DB_ONLINE)  return `<div id="syncBadge" style="${base}#86efac;background:#dcfce7;color:#16a34a;">● 동기화됨</div>`;
   return `<div id="syncBadge" style="${base}#fcd34d;background:#fef3c7;color:#b45309;">● 오프라인</div>`;
 }
-
 function updateSyncBadge() {
   const el = document.getElementById('syncBadge');
   if (!el) return;
@@ -62,6 +62,8 @@ async function initFirebase() {
     db.ref('.info/connected').on('value', snap => {
       DB_ONLINE = !!snap.val();
       updateSyncBadge();
+      // 온라인 복구 시 쓰기 대기열 자동 flush
+      if (DB_ONLINE) setTimeout(_wqFlush, 500);
     });
   } catch (e) {
     console.warn('Firebase SDK 로드 실패 → 로컬 모드로 동작:', e.message);
@@ -80,6 +82,7 @@ function lsSet(key, val) {
   catch (e) {
     if (e.name === 'QuotaExceededError' || e.code === 22) {
       try {
+        // 보조 캐시 정리 후 재시도
         ['crm_napum_synced', 'crm_napum_void_migrated_v1'].forEach(k => localStorage.removeItem(k));
         localStorage.setItem(key, JSON.stringify(val));
         console.warn('[lsSet] 용량 초과 → 보조 캐시 정리 후 재저장 성공');
@@ -94,13 +97,8 @@ function lsSet(key, val) {
 const toMap = arr => arr.reduce((m, o) => { m[o.id] = o; return m; }, {});
 const toArr = map => Object.values(map || {}).sort((a, b) => a.id - b.id);
 
-// ── Firebase 저장 헬퍼 + 실패 대기열 ────────────────────────────────────────
-/**
- * 클라우드 저장 실패 대기열 (write queue)
- * 키: Firebase 경로 문자열  값: { data, label, failedAt }
- * 네트워크 복구 시 자동으로 전체 flush.
- * localStorage 'crm_write_queue' 에도 영속 보관 → 앱 재시작 후에도 복구.
- */
+// ── 클라우드 쓰기 대기열 (Write Queue) ───────────────────────────────────────
+// 네트워크 오류 시 로컬 영속 보관 → 복구 후 자동 재전송
 const WQ_LS_KEY = 'crm_write_queue';
 
 function _wqLoad() {
@@ -160,13 +158,14 @@ if (!window._wqLifecycleBound) {
 }
 
 /**
- * Firebase ref.set() 래퍼
+ * Firebase ref.set() 래퍼 — 네트워크 오류 시 재시도 + 대기열 등록
  * 1) 즉시 시도 → 2) 네트워크 오류 시 1.5초 후 1회 재시도
  *    → 3) 그래도 실패 시 write queue에 등록 (복구 후 자동 재전송)
- * Permission 오류 등 코드 버그는 대기열에 넣지 않고 즉시 토스트만.
+ * Permission 오류 등 코드 버그는 대기열에 넣지 않고 토스트만.
  */
 async function _fbWrite(ref, data, label) {
-  const path = ref.toString().replace(/^https?:\/\/[^/]+/, ''); // DB URL → 경로만
+  // Firebase Database URL에서 경로 부분만 추출 (대기열 키)
+  const path = ref.toString().replace(/^https?:\/\/[^/]+/, '');
 
   const _isNetwork = e => {
     const msg = (e.message || e.code || '').toLowerCase();
@@ -176,31 +175,33 @@ async function _fbWrite(ref, data, label) {
 
   try {
     await ref.set(data);
-    // 성공 시 대기열에 남아 있던 같은 경로 항목 제거
+    // 성공 시 이전에 대기열에 있던 같은 경로 항목 제거
     _wqRemove(path);
     return;
   } catch (e1) {
     if (_isNetwork(e1)) {
-      // 1차 재시도
+      // 1.5초 후 1회 재시도
       await new Promise(r => setTimeout(r, 1500));
       try {
         await ref.set(data);
         _wqRemove(path);
         return;
       } catch (e2) {
-        console.warn('[' + label + '] 재시도 실패 → 대기열 등록:', e2.message || e2);
-        // 네트워크 실패 → 대기열에 보관 (복구 후 자동 재전송)
-        _wqAdd(path, data, label);
-        showToast('📡 오프라인 — 복구 시 자동 전송됩니다');
-        return;
+        if (_isNetwork(e2)) {
+          // 재시도도 실패 → 대기열 등록 (복구 후 자동 재전송)
+          _wqAdd(path, data, label);
+          showToast('⚠️ 오프라인: 로컬 저장됨. 연결 복구 시 자동 동기화');
+          return;
+        }
       }
     }
-    // Permission denied 등 코드 오류 → 대기열 불필요, 토스트만
-    console.warn('[' + label + '] 저장 실패:', e1.code, e1.message || e1);
+    // Permission 오류 등 코드 버그
+    console.error(`[_fbWrite] ${label} 실패:`, e1);
     showToast('⚠️ 클라우드 저장 실패 (로컬 저장됨)');
   }
 }
 
+// ── Firebase 저장 헬퍼 ────────────────────────────────────────────────────────
 async function saveC() {
   lsSet('crm_clients', S.clients);
   if (!db) return;
@@ -219,7 +220,6 @@ async function _saveOneClient(obj) {
   await _fbWrite(db.ref('clients/' + obj.id), payload, '_saveOneClient');
 }
 async function _saveOneTx(obj) {
-  // 원본 객체를 변경하지 않도록 updatedAt을 별도 payload에 추가
   const payload = { ...obj, updatedAt: Date.now() };
   lsSet('crm_tx', S.transactions);
   if (!db) return;
@@ -240,8 +240,8 @@ async function _deleteOneTx(id) {
 async function _uploadAll() {
   if (!db) return;
   await Promise.all([
-    db.ref('clients').set(toMap(S.clients)),
-    db.ref('transactions').set(toMap(S.transactions)),
+    _fbWrite(db.ref('clients'), toMap(S.clients), '_uploadAll:clients'),
+    _fbWrite(db.ref('transactions'), toMap(S.transactions), '_uploadAll:transactions'),
   ]);
 }
 
@@ -264,10 +264,9 @@ function _attachListeners() {
     // → CRM 로컬 값과 병합 시 결제 필드를 서버 값으로 우선 반영
     const merged = incoming.map(inTx => {
       if (!inTx.dlControlled) return inTx;
-      // 로컬 거래를 base로 사용해 _napumId, memo, clientId 등 CRM 전용 필드 보존
       const local = S.transactions.find(t => t.id === inTx.id);
       if (!local) return inTx;
-      // 납품 관리 앱이 결제 처리 → 로컬 base에 결제 필드만 덮어씀 (local.dlControlled 여부 무관)
+      // 납품 관리 앱이 결제 처리 → 로컬 base에 결제 필드만 덮어씀
       return {
         ...local,
         status:           inTx.status,
@@ -315,10 +314,11 @@ function deleteTxFn(id) {
 
 /** 상태 토글 (배지 클릭) */
 function toggleStatus(txId) {
+  const next = TX_STATUS_NEXT;
   let updatedTx = null;
   S.transactions = S.transactions.map(t => {
     if (t.id !== txId) return t;
-    const newStatus = TX_STATUS_NEXT[t.status] || t.status;
+    const newStatus = next[t.status] || t.status;
     const isFull    = isTxComplete(newStatus);
     const isPending = newStatus === TX_STATUS.UNPAID || newStatus === TX_STATUS.UNBILLED;
     const u = { ...t, status: newStatus };
@@ -351,7 +351,7 @@ function completeStatus(txId, status) {
       u.paidAt     = new Date().toISOString();
       u.paidMethod = u.paidMethod || 'cash';
     }
-    delete u.dlControlled; // CRM이 직접 처리 → 납품 관리 앱 우선권 해제
+    delete u.dlControlled;
     updatedTx = u; return u;
   });
   if (updatedTx) _saveOneTx(updatedTx); else saveTX();
@@ -359,9 +359,6 @@ function completeStatus(txId, status) {
   render();
   _afterNapumPatch(updatedTx);
 }
-
-/** CRM이 직접 패치한 napumId 목록 (Firebase echo 구분용) */
-const _napumOwnPatchKeys = new Set();
 
 /** 납품 역방향 패치 공통 헬퍼 */
 function _afterNapumPatch(tx, delayMs = 0) {
@@ -372,7 +369,6 @@ function _afterNapumPatch(tx, delayMs = 0) {
       .then(ok => {
         if (ok) {
           showToast('📦 납품 관리에도 반영됨');
-          // 패치 성공 후 납품 앱 Firebase에서 즉시 re-fetch해 CRM UI 갱신
           _refetchNapumOrderAfterPatch(tx._napumId);
         } else {
           _napumOwnPatchKeys.delete(tx._napumId);
@@ -387,6 +383,9 @@ function _afterNapumPatch(tx, delayMs = 0) {
   if (delayMs > 0) setTimeout(dopatch, delayMs); else dopatch();
 }
 
+/** CRM이 직접 패치한 napumId 목록 (Firebase echo 구분용) */
+const _napumOwnPatchKeys = new Set();
+
 /** 패치 후 Firebase에서 해당 order를 즉시 re-fetch해 CRM UI 갱신 */
 async function _refetchNapumOrderAfterPatch(napumKey) {
   if (!napumKey || !napumKey.includes(':')) return;
@@ -398,20 +397,18 @@ async function _refetchNapumOrderAfterPatch(napumKey) {
     const napumDb = _getNapumApp().database();
     const snap    = await napumDb.ref(`workspaces/${wsId}/orders/${orderId}`).once('value');
     if (!snap.exists()) return;
-    const order = snap.val();
+    const order   = snap.val();
     let changed = false;
     S.transactions = S.transactions.map(t => {
       if (t._napumId !== napumKey) return t;
-      const prev = JSON.stringify(t);
-      const next = {
-        ...t,
-        // order.isPaid=false 시 상태를 미수금으로 명시 (이전 상태 유지하지 않음)
+      const prev  = JSON.stringify(t);
+      const next  = { ...t,
         status:     order.isPaid
           ? (t.status === TX_STATUS.UNBILLED ? TX_STATUS.BILLED : TX_STATUS.PAID)
           : TX_STATUS.UNPAID,
-        paidAmount: order.paidAmount  !== undefined ? order.paidAmount  : t.paidAmount,
-        paidAt:     order.paidAt      !== undefined ? order.paidAt      : t.paidAt,
-        paidMethod: order.paidMethod  !== undefined ? order.paidMethod  : t.paidMethod,
+        paidAmount: order.paidAmount !== undefined ? order.paidAmount : t.paidAmount,
+        paidAt:     order.paidAt    !== undefined ? order.paidAt    : t.paidAt,
+        paidMethod: order.paidMethod !== undefined ? order.paidMethod : t.paidMethod,
       };
       // 완납 취소 시 결제 관련 필드 명시적 삭제
       if (!order.isPaid) {
@@ -433,6 +430,7 @@ async function _refetchNapumOrderAfterPatch(napumKey) {
 
 // ── 데이터 로드 ───────────────────────────────────────────────────────────────
 async function loadData() {
+  // 상태 초기화
   S.txMonth = thisMonth();
   S.txDate  = localDate();
   S.txWeek  = null;
@@ -507,10 +505,10 @@ async function loadData() {
   // 5) CRM 실시간 리스너
   _attachListeners();
 
-  // 5) 납품 앱 실시간 리스너
+  // 6) 납품 앱 실시간 리스너
   attachNapumListeners().catch(e => console.warn('납품 리스너 시작 실패:', e));
 
-  // 5-1) 백그라운드 복귀 / 네트워크 복구 시 리스너 재연결 (최초 1회만 등록)
+  // 6-1) 백그라운드 복귀 / 네트워크 복구 시 리스너 재연결 (최초 1회만 등록)
   if (!window._napumLifecycleBound) {
     window._napumLifecycleBound = true;
 
@@ -537,13 +535,13 @@ async function loadData() {
     });
   }
 
-  // 6) 마이그레이션된 데이터 Firebase 반영
+  // 7) 마이그레이션된 데이터 Firebase 반영
   if (_migrated && db) {
-    try { await db.ref('transactions').set(toMap(S.transactions)); }
+    try { await _fbWrite(db.ref('transactions'), toMap(S.transactions), 'migration'); }
     catch (e) { console.warn('마이그레이션 클라우드 반영 실패:', e); }
   }
 
-  // 7) 자동 백업 체크
+  // 8) 자동 백업 체크
   setTimeout(async () => {
     await _syncBackupsFromFb();
     checkAutoBackup();
