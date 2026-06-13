@@ -1,1172 +1,907 @@
-// ── SIDEBAR / HEADER / BOTTOM NAV ─────────────────────────────────────────────
-function sidebarInner(onClose = '') {
-  const btns = NAV.map(({ k, label }) => {
-    const icon = { dashboard:I.grid, clients:I.users, transactions:I.activity, receivables:I.card }[k];
-    const a    = S.view === k;
-    return `<button onclick="setView('${k}')${onClose}" ${a ? '' : 'class="nav-btn"'}
-      style="width:100%;display:flex;align-items:center;gap:10px;padding:10px;border-radius:8px;border:none;cursor:pointer;margin-bottom:2px;text-align:left;background:${a?'#fef3c7':'transparent'};color:${a?'#b45309':'#64748b'};font-weight:${a?700:400};font-size:13px;">
-      ${icon}${esc(label)}
-    </button>`;
-  }).join('');
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  § 17  앱 초기화 (DOMContentLoaded)                               ║
+// ╚══════════════════════════════════════════════════════════════╝
 
-  return `
-    <div style="padding:18px 16px;border-bottom:1px solid #e2e8f0;">
-      <div style="color:#b45309;font-weight:700;font-size:14px;">거래처·회계</div>
-      <div style="color:#94a3b8;font-size:11px;margin-top:2px;">관리 시스템</div>
-    </div>
-    <nav style="flex:1;padding:10px;overflow-y:auto;">${btns}</nav>
-    <div style="padding:10px;border-top:1px solid #e2e8f0;display:flex;flex-direction:column;gap:6px;">
-      <button onclick="exportData()" style="width:100%;display:flex;align-items:center;justify-content:center;gap:7px;padding:7px;border-radius:8px;border:1px solid #e2e8f0;background:#f8fafc;color:#475569;font-size:12px;font-weight:500;cursor:pointer;" onmouseenter="this.style.background='#f0fdf4';this.style.color='#16a34a';this.style.borderColor='#bbf7d0'" onmouseleave="this.style.background='#f8fafc';this.style.color='#475569';this.style.borderColor='#e2e8f0'">
-        ${I.download} JSON 저장
-      </button>
-      <button onclick="importData()" style="width:100%;display:flex;align-items:center;justify-content:center;gap:7px;padding:7px;border-radius:8px;border:1px solid #e2e8f0;background:#f8fafc;color:#475569;font-size:12px;font-weight:500;cursor:pointer;" onmouseenter="this.style.background='#eff6ff';this.style.color='#1d4ed8';this.style.borderColor='#bfdbfe'" onmouseleave="this.style.background='#f8fafc';this.style.color='#475569';this.style.borderColor='#e2e8f0'">
-        ${I.upload} JSON 불러오기
-      </button>
-      <button onclick="openSyncModal()" style="width:100%;display:flex;align-items:center;justify-content:center;gap:7px;padding:7px;border-radius:8px;border:1px solid #d97706;background:#fef3c7;color:#b45309;font-size:12px;font-weight:600;cursor:pointer;" onmouseenter="this.style.background='#fde68a'" onmouseleave="this.style.background='#fef3c7'">
-        ${I.spark} 납품 관리 연동
-      </button>
-      <button onclick="openBackupModal()" style="width:100%;display:flex;align-items:center;justify-content:center;gap:7px;padding:7px;border-radius:8px;border:1px solid #c4b5fd;background:#f5f3ff;color:#7c3aed;font-size:12px;font-weight:500;cursor:pointer;" onmouseenter="this.style.background='#ede9fe';this.style.color='#6d28d9'" onmouseleave="this.style.background='#f5f3ff';this.style.color='#7c3aed'">
-        🗄️ 백업 / 복구
-      </button>
-      <div style="text-align:center;color:#cbd5e1;font-size:10px;padding-top:2px;">거래처 ${S.clients.length}개 · ${S.transactions.length}건</div>
-      <div style="text-align:center;color:#e2e8f0;font-size:10px;">${APP_VERSION}</div>
-      ${_syncBadgeHTML()}
-      <!-- 변경이력 아코디언 -->
-      <div style="margin-top:6px;border-top:1px solid #334155;padding-top:6px;">
-        <button onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none';this.querySelector('.arr').textContent=this.nextElementSibling.style.display==='none'?'▶':'▼'"
-          style="width:100%;background:none;border:none;color:#94a3b8;font-size:11px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:4px;padding:3px 0;">
-          <span class="arr">▶</span> 변경이력
-        </button>
-        <div style="display:none;margin-top:6px;max-height:220px;overflow-y:auto;font-size:10px;color:#94a3b8;line-height:1.6;">
-          <div style="margin-bottom:8px;">
-            <span style="color:#34d399;font-weight:700;">v6.1</span>
-            <ul style="margin:3px 0 0 12px;padding:0;list-style:disc;">
-              <li>모든 버전 통합 — 누락 없는 완전체 빌드</li>
-              <li>납품 역방향 패치 원자적 처리 (분리 update → 단일 update)</li>
-              <li>dlControlled 병합 로직 개선 (local.dlControlled 여부 무관하게 결제필드 덮어씀)</li>
-              <li>Firebase 저장 실패 시 에러 토스트 + 로컬 보존 보장</li>
-              <li>백그라운드/네트워크 복귀 시 납품 리스너 강제 재연결</li>
-              <li>sharedClientsRef detach 메모리 정리</li>
-              <li>코드 정리 — 미사용 변수·중복 로직 제거</li>
-            </ul>
-          </div>
-          <div style="margin-bottom:8px;">
-            <span style="color:#94a3b8;font-weight:700;">v6.0</span>
-            <ul style="margin:3px 0 0 12px;padding:0;list-style:disc;">
-              <li>채권·채무 기간 필터 (월별/분기별/전체) + 좌우 이동</li>
-              <li>TX_STATUS 상수화 — 상태 문자열 직접 비교 제거</li>
-              <li>updatedAt 자동 기록 (저장 시마다)</li>
-              <li>납품 앱 실시간 리스너 _pending 마커 버그 수정</li>
-            </ul>
-          </div>
-          <div style="margin-bottom:8px;">
-            <span style="color:#94a3b8;font-weight:700;">v5.0</span>
-            <ul style="margin:3px 0 0 12px;padding:0;list-style:disc;">
-              <li>다중 워크스페이스 실시간 동기화</li>
-              <li>sharedClients 필터링 (isSelfWs 버그 수정)</li>
-              <li>납품앱 ↔ CRM 결제 역방향 패치</li>
-            </ul>
-          </div>
-          <div style="margin-bottom:8px;">
-            <span style="color:#94a3b8;font-weight:700;">v4.0</span>
-            <ul style="margin:3px 0 0 12px;padding:0;list-style:disc;">
-              <li>멀티파일 구조 분리 (js/)</li>
-              <li>채권·채무 관리 뷰</li>
-              <li>일괄 수금 처리</li>
-            </ul>
-          </div>
-        </div>
-      </div>
-    </div>`;
+// ─── 시스템 다크모드 자동 감지 ───
+
+function initSystemTheme() {
+    // 이미 사용자가 직접 설정한 경우는 그대로
+    if (localStorage.getItem('theme')) return;
+    const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.body.classList.toggle('light', !isDark);
+    document.getElementById('themeBtn').textContent = isDark ? '☀️' : '🌙';
 }
 
-function buildMobileHeader() {
-  return `
-    <div class="mobile-header">
-      <button onclick="openDrawer()" style="background:none;border:none;cursor:pointer;color:#475569;display:flex;align-items:center;">${I.menu}</button>
-      <span style="font-size:14px;font-weight:700;color:#b45309;">거래처·회계</span>
-      <span style="font-size:12px;color:#94a3b8;">${esc(LABELS[S.view] || '')}</span>
-    </div>`;
-}
-
-function buildBottomNav() {
-  const dots  = NAV.map(({ k }) => `<div style="width:5px;height:5px;border-radius:50%;background:${S.view===k?'#d97706':'#e2e8f0'};transition:background .2s;"></div>`).join('');
-  const items = NAV.map(({ k, label }) => {
-    const icon = { dashboard:I.grid, clients:I.users, transactions:I.activity, receivables:I.card }[k];
-    const a    = S.view === k;
-    return `<button onclick="setView('${k}')" style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;background:none;border:none;color:${a?'#b45309':'#94a3b8'};padding:4px 0;">
-      ${icon}
-      <span style="font-size:9px;font-weight:${a?700:400};">${esc(label.replace(/\s/g,''))}</span>
-    </button>`;
-  }).join('');
-  return `<div class="bottom-wrap">
-    <div style="display:flex;justify-content:center;gap:6px;padding:5px 0 2px;background:#fff;">${dots}</div>
-    <nav class="bottom-nav" style="border-top:1px solid #e2e8f0;">${items}</nav>
-  </div>`;
-}
-
-function buildDrawer() {
-  return `
-    <div class="sidebar-overlay" id="sidebarOverlay" onclick="closeDrawer()" style="display:${S.drawerOpen?'block':'none'};"></div>
-    <div class="sidebar-drawer ${S.drawerOpen?'open':''}" id="sidebarDrawer">
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid #e2e8f0;">
-        <span style="color:#b45309;font-weight:700;font-size:14px;">메뉴</span>
-        <button onclick="closeDrawer()" style="background:none;border:none;cursor:pointer;color:#94a3b8;">${I.x}</button>
-      </div>
-      <div style="flex:1;display:flex;flex-direction:column;overflow:hidden;">${sidebarInner(';closeDrawer()')}</div>
-    </div>`;
-}
-
-// ── MODAL WRAPPERS ────────────────────────────────────────────────────────────
-function modalWrap(title, onClose, maxW, content) {
-  return `
-    <div style="position:fixed;top:0;right:0;bottom:0;left:0;z-index:50;display:flex;align-items:flex-end;justify-content:center;padding:0;background:rgba(15,23,42,.35);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);" id="modalBackdrop">
-      <div style="background:#fff;border:1px solid #e2e8f0;width:100%;max-width:${maxW}px;border-radius:16px 16px 0 0;box-shadow:0 -8px 40px rgba(0,0,0,.12);max-height:92vh;max-height:92dvh;display:flex;flex-direction:column;">
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid #f1f5f9;flex-shrink:0;">
-          <span style="color:#0f172a;font-weight:600;font-size:15px;">${esc(title)}</span>
-          <button onclick="${onClose}" style="color:#94a3b8;background:none;border:none;padding:4px;">${I.x}</button>
-        </div>
-        <div style="padding:18px;overflow-y:auto;-webkit-overflow-scrolling:touch;padding-bottom:calc(18px + env(safe-area-inset-bottom,0px));">${content}</div>
-      </div>
-    </div>`;
-}
-
-function buildConfirm() {
-  const c = M.confirm; if (!c) return '';
-  return `
-    <div style="position:fixed;top:0;right:0;bottom:0;left:0;z-index:60;display:flex;align-items:center;justify-content:center;padding:16px;background:rgba(15,23,42,.4);">
-      <div style="background:#fff;border:1px solid #e2e8f0;max-width:300px;width:100%;padding:22px;border-radius:16px;box-shadow:0 20px 40px rgba(0,0,0,.12);">
-        <p style="color:#0f172a;font-size:14px;text-align:center;margin-bottom:18px;white-space:pre-line;">${esc(c.msg)}</p>
-        <div style="display:flex;gap:8px;">
-          <button onclick="M.confirm=null;renderModals()" style="flex:1;padding:9px 0;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:8px;font-size:13px;cursor:pointer;">취소</button>
-          <button onclick="${c.okStr}" style="flex:1;padding:9px 0;background:#dc2626;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:600;cursor:pointer;">삭제</button>
-        </div>
-      </div>
-    </div>`;
-}
-
-// ── CLIENT / TX MODAL ─────────────────────────────────────────────────────────
-function buildClientModal() {
-  const m   = M.clientModal;
-  const isEd = m !== 'add' && typeof m === 'object';
-  const f   = isEd ? m : { name:'', bizNo:'', rep:'', phone:'', email:'', address:'', type:'매출처', memo:'' };
-  const inp = (key, ph, type = 'text') => `<input id="cf_${key}" type="${type}" value="${esc(f[key] || '')}" placeholder="${esc(ph)}" style="${ISX}" ${FB}>`;
-  const content = `
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-      <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">거래처명<span style="color:#dc2626">*</span></label><div style="margin-top:4px;">${inp('name','회사명')}</div></div>
-      <div><label style="font-size:12px;color:#64748b;">사업자번호</label><div style="margin-top:4px;">${inp('bizNo','000-00-00000')}</div></div>
-      <div><label style="font-size:12px;color:#64748b;">구분<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><select id="cf_type" style="${ISX}"><option ${f.type==='매출처'?'selected':''}>매출처</option><option ${f.type==='매입처'?'selected':''}>매입처</option><option ${f.type==='매출/매입'?'selected':''}>매출/매입</option></select></div></div>
-      <div><label style="font-size:12px;color:#64748b;">대표자</label><div style="margin-top:4px;">${inp('rep','대표자명')}</div></div>
-      <div><label style="font-size:12px;color:#64748b;">전화번호</label><div style="margin-top:4px;">${inp('phone','02-0000-0000')}</div></div>
-      <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">이메일</label><div style="margin-top:4px;">${inp('email','email@company.com','email')}</div></div>
-      <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">주소</label><div style="margin-top:4px;">${inp('address','주소 입력')}</div></div>
-      <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">메모</label><div style="margin-top:4px;"><textarea id="cf_memo" placeholder="특이사항" rows="2" style="${ISX}resize:none;" ${FB}>${esc(f.memo||'')}</textarea></div></div>
-    </div>
-    <div style="display:flex;gap:8px;margin-top:16px;">
-      <button onclick="closeClientModal()" style="flex:1;padding:10px 0;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:8px;font-size:13px;cursor:pointer;">취소</button>
-      <button onclick="submitClientModal(${isEd?f.id:'null'})" style="flex:1;padding:10px 0;background:#d97706;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;">저장</button>
-    </div>`;
-  return modalWrap(isEd ? '거래처 수정' : '거래처 추가', 'closeClientModal()', 480, content);
-}
-
-function buildTxModal() {
-  const m   = M.txModal;
-  const isEd = m !== 'add' && typeof m === 'object';
-  const f   = isEd ? m : { date:today(), clientId:S.clients[0]?.id||1, type:'매출', amount:'', tax:'', taxType:'taxable', memo:'', status:defaultStatus('매출') };
-  if (!f.taxType) f.taxType = (f.tax === 0 && f.amount > 0) ? 'exempt' : 'taxable';
-  const initClientName = isEd ? (S.clients.find(c => c.id === f.clientId)?.name || '') : '';
-  const clientOpts = S.clients.map(c => `<option value="${c.id}">${esc(c.name)}</option>`).join('');
-  const stOpts     = (f.type === '매출' ? [TX_STATUS.UNPAID,TX_STATUS.PAID] : [TX_STATUS.UNBILLED,TX_STATUS.BILLED]).map(s => `<option ${s === f.status ? 'selected' : ''}>${esc(s)}</option>`).join('');
-  const isTaxable  = f.taxType !== 'exempt';
-  const taxAmt     = isTaxable ? (+f.tax || 0) : 0;
-  const preview    = f.amount > 0
-    ? `<div id="txTotal" style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 14px;margin-top:12px;display:flex;justify-content:space-between;align-items:center;"><span style="color:#16a34a;font-size:12px;">합계 금액</span><span style="color:#16a34a;font-weight:700;font-size:16px;">${fmtW((+f.amount||0)+taxAmt)}</span></div>`
-    : `<div id="txTotal"></div>`;
-  const taxToggle = `
-    <div style="display:flex;gap:0;border:1px solid #e2e8f0;border-radius:8px;overflow:hidden;margin-top:4px;">
-      <button id="tt_taxable" onclick="onTxTaxType('taxable')" style="flex:1;padding:8px 0;font-size:12px;font-weight:600;border:none;cursor:pointer;transition:all .15s;background:${isTaxable?'#d97706':'#f8fafc'};color:${isTaxable?'#fff':'#94a3b8'};">과세 (10%)</button>
-      <button id="tt_exempt"  onclick="onTxTaxType('exempt')"  style="flex:1;padding:8px 0;font-size:12px;font-weight:600;border:none;cursor:pointer;transition:all .15s;background:${!isTaxable?'#0369a1':'#f8fafc'};color:${!isTaxable?'#fff':'#94a3b8'};">비과세</button>
-    </div>`;
-  const content = `
-    <input type="hidden" id="tf_taxType" value="${isTaxable?'taxable':'exempt'}">
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
-      <div><label style="font-size:12px;color:#64748b;">거래일자<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><input id="tf_date" type="date" value="${esc(f.date)}" max="${localDate()}" style="${ISX}"></div></div>
-      <div><label style="font-size:12px;color:#64748b;">구분<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><select id="tf_type" onchange="onTxType(this.value)" style="${ISX}"><option ${f.type==='매출'?'selected':''}>매출</option><option ${f.type==='매입'?'selected':''}>매입</option></select></div></div>
-      <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">거래처<span style="color:#dc2626">*</span></label><div style="margin-top:4px;position:relative;"><input id="tf_clientName" list="tf_clientList" value="${esc(initClientName)}" placeholder="거래처명 입력 또는 선택…" autocomplete="off" oninput="_onTxClientInput(this.value)" onkeydown="if(event.key==='Enter'||event.keyCode===13){this.blur();}" style="${ISX}"><datalist id="tf_clientList">${clientOpts}</datalist><input type="hidden" id="tf_clientId" value="${isEd?f.clientId:''}"></div></div>
-      <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">과세 여부</label>${taxToggle}</div>
-      <div><label style="font-size:12px;color:#64748b;">공급가액<span style="color:#dc2626">*</span></label><div style="margin-top:4px;"><input id="tf_amount" value="${f.amount?fmt(f.amount):''}" oninput="applyAmtFmt(this);onTxAmt(this.value)" placeholder="0" style="${ISX}" ${FB}></div></div>
-      <div><label style="font-size:12px;color:#64748b;">세액${isTaxable?' (자동계산)':' (비과세)'}</label><div style="margin-top:4px;"><input id="tf_tax" value="${isTaxable&&f.tax?fmt(f.tax):''}" oninput="applyAmtFmt(this);onTxTax(this.value)" placeholder="0" style="${ISX};${!isTaxable?'background:#f1f5f9;color:#94a3b8;':''}" ${!isTaxable?'disabled':''} ${FB}></div></div>
-      <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">적요</label><div style="margin-top:4px;"><input id="tf_memo" value="${esc(f.memo||'')}" placeholder="거래 내용" style="${ISX}" ${FB}></div></div>
-      <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">상태</label><div style="margin-top:4px;"><select id="tf_status" style="${ISX}">${stOpts}</select></div></div>
-    </div>
-    ${preview}
-    <div style="display:flex;gap:8px;margin-top:16px;">
-      <button onclick="closeTxModal()" style="flex:1;padding:10px 0;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:8px;font-size:13px;cursor:pointer;">취소</button>
-      <button onclick="submitTxModal(${isEd?f.id:'null'})" style="flex:1;padding:10px 0;background:#d97706;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;">저장</button>
-    </div>`;
-  return modalWrap(isEd ? '거래 수정' : '거래 추가', 'closeTxModal()', 480, content);
-}
-
-// ── AI 영수증 스캔 ─────────────────────────────────────────────────────────────
-function openScanInput() {
-  const proto = location.protocol;
-  if (proto === 'file:' || proto === 'content:' || proto === 'blob:') {
-    M.scanModal = { state:'localfile', previewUrl:null, base64:null, mediaType:null, result:null, error:null };
-    _pushModalHistory(); renderModals(); return;
-  }
-  const input = document.createElement('input');
-  input.type = 'file'; input.accept = 'image/*'; input.capture = 'environment'; input.style.display = 'none';
-  document.body.appendChild(input);
-  input.onchange = async e => {
-    const file = e.target.files[0];
-    document.body.removeChild(input);
-    if (!file) return;
-    if (file.size > 5 * 1024 * 1024) { showToast('이미지가 너무 큽니다. (최대 5MB)'); return; }
-    await runScan(file);
-  };
-  input.click();
-}
-
-async function runScan(file) {
-  const previewUrl = URL.createObjectURL(file);
-  const base64 = await new Promise((res, rej) => {
-    const r = new FileReader();
-    r.onload  = () => res(r.result.split(',')[1]);
-    r.onerror = () => rej(new Error('read failed'));
-    r.readAsDataURL(file);
-  });
-  const mediaType = file.type || 'image/jpeg';
-  M.scanModal = { state:'loading', previewUrl, base64, mediaType, result:null, error:null };
-  renderModals();
-
-  try {
-    if (!OPENROUTER_API_KEY) throw new Error('OpenRouter API 키가 설정되지 않았습니다.');
-    const prompt = `이 이미지는 영수증, 세금계산서, 청구서, 거래명세서 등 매입 관련 문서입니다.
-이미지를 분석하여 아래 JSON 형식으로만 응답하세요. 마크다운 코드블록 없이 JSON만 출력하세요.
-
-{
-  "supplierName": "공급자(판매처) 상호명. 없으면 null",
-  "date": "거래일자 YYYY-MM-DD 형식. 없으면 오늘 날짜",
-  "amount": "공급가액(세금 제외) 숫자만. 없으면 0",
-  "tax": "부가세액 숫자만. 없으면 0",
-  "memo": "품목이나 거래내용 요약 (50자 이내)",
-  "confidence": "분석 신뢰도 high/medium/low",
-  "note": "사용자에게 전달할 참고사항 (한국어, 없으면 null)"
-}
-
-규칙:
-- amount와 tax는 콤마 없는 정수
-- 세금계산서면 공급가액과 세액을 분리
-- 영수증(부가세 포함가)이면 amount=총액÷1.1 반올림, tax=총액-amount
-- 날짜를 읽기 어려우면 오늘(${localDate()}) 사용
-- 문서가 아닌 이미지면 confidence=low, note에 설명`;
-
-    const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-        'HTTP-Referer': location.origin,
-      },
-      body: JSON.stringify({
-        model: 'google/gemini-2.0-flash-exp:free',
-        max_tokens: 1000,
-        messages: [{ role: 'user', content: [
-          { type: 'image_url', image_url: { url: `data:${mediaType};base64,${base64}` } },
-          { type: 'text', text: prompt }
-        ]}],
-      }),
-    });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      throw new Error(err?.error?.message || `API 오류 ${resp.status}`);
-    }
-    const data   = await resp.json();
-    const raw    = data.choices?.[0]?.message?.content || '{}';
-    const clean  = raw.replace(/```[a-z]*\n?/g, '').replace(/```/g, '').trim();
-    const parsed = JSON.parse(clean);
-    M.scanModal = { state:'done', previewUrl, base64, mediaType, result:parsed, error:null };
-  } catch (err) {
-    M.scanModal = { state:'error', previewUrl, base64, mediaType, result:null, error: err.message || '분석 실패' };
-  }
-  renderModals();
-}
-
-function buildScanModal() {
-  const m = M.scanModal; if (!m) return '';
-
-  if (m.state === 'localfile') {
-    return modalWrap('AI 영수증 스캔 사용법', 'closeScanModal()', 500, `
-      <div style="text-align:center;padding:8px 0 20px;">
-        <div style="font-size:40px;margin-bottom:12px;">🌐</div>
-        <div style="color:#0f172a;font-weight:700;font-size:16px;margin-bottom:8px;">웹 서버 호스팅이 필요합니다</div>
-        <div style="color:#64748b;font-size:13px;line-height:1.6;margin-bottom:20px;">AI 스캔 기능은 외부 API를 호출하기 때문에<br>로컬 파일에서는 보안상 차단됩니다.</div>
-      </div>
-      <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px;">
-        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:14px;">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;"><span style="background:#16a34a;color:#fff;font-size:11px;font-weight:700;padding:2px 8px;border-radius:9999px;">추천</span><span style="color:#16a34a;font-weight:700;font-size:13px;">GitHub Pages (무료·영구)</span></div>
-          <ol style="color:#334155;font-size:12px;line-height:2;padding-left:18px;margin:0;"><li>github.com 가입 → 새 저장소 생성</li><li>HTML 파일 업로드</li><li>Settings → Pages → Branch: main → Save</li></ol>
-        </div>
-        <div style="background:#fefce8;border:1px solid #fef08a;border-radius:10px;padding:12px;">
-          <div style="color:#b45309;font-size:12px;line-height:1.7;">⚠️ <strong>다른 기능은 영향 없음</strong> — 거래처 관리, 거래 내역, 채권·채무, JSON 저장/불러오기는 로컬 파일에서도 정상 작동합니다.</div>
-        </div>
-      </div>
-      <button type="button" onclick="closeScanModal()" style="width:100%;padding:11px 0;background:#d97706;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;">확인</button>`);
-  }
-  if (m.state === 'loading') {
-    return modalWrap('AI 영수증 분석', 'closeScanModal()', 480, `
-      <div style="text-align:center;padding:32px 0;">
-        <div style="margin:0 auto 18px;width:52px;height:52px;border:3px solid #e2e8f0;border-top-color:#d97706;border-radius:50%;animation:spin .8s linear infinite;"></div>
-        <div style="color:#0f172a;font-weight:600;margin-bottom:6px;">이미지 분석 중…</div>
-        <div style="color:#94a3b8;font-size:12px;">Claude AI가 거래 정보를 읽고 있습니다</div>
-      </div>
-      <style>@keyframes spin{to{transform:rotate(360deg);}}</style>`);
-  }
-  if (m.state === 'error') {
-    return modalWrap('AI 영수증 분석', 'closeScanModal()', 480, `
-      <div style="text-align:center;padding:24px 0;">
-        <div style="font-size:36px;margin-bottom:12px;">⚠️</div>
-        <div style="color:#dc2626;font-weight:600;margin-bottom:8px;">분석 실패</div>
-        <div style="color:#64748b;font-size:13px;margin-bottom:20px;">${esc(m.error)}</div>
-        <div style="display:flex;gap:8px;justify-content:center;">
-          <button type="button" onclick="closeScanModal()" style="padding:9px 20px;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:8px;font-size:13px;cursor:pointer;">닫기</button>
-          <button type="button" onclick="openScanInput()" style="padding:9px 20px;background:#d97706;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;">다시 촬영</button>
-        </div>
-      </div>`);
-  }
-
-  const r          = m.result || {};
-  const confColor  = r.confidence === 'high' ? '#16a34a' : r.confidence === 'medium' ? '#b45309' : '#dc2626';
-  const confLabel  = r.confidence === 'high' ? '높음' : r.confidence === 'medium' ? '보통' : '낮음';
-  const total      = (+r.amount || 0) + (+r.tax || 0);
-  const matchedClient = r.supplierName ? S.clients.find(c => c.type === '매입처' && c.name.includes(r.supplierName?.slice(0, 2))) : null;
-  const clientOpts = S.clients.map(c => `<option value="${c.id}" ${matchedClient?.id === c.id ? 'selected' : ''}>${esc(c.name)} (${esc(c.type)})</option>`).join('');
-
-  return modalWrap('AI 영수증 분석 결과', 'closeScanModal()', 520, `
-    <div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:16px;">
-      <img src="${m.previewUrl}" alt="영수증" style="width:80px;height:80px;object-fit:cover;border-radius:8px;border:1px solid #e2e8f0;flex-shrink:0;">
-      <div style="flex:1;min-width:0;">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-          <span style="color:#0f172a;font-weight:600;font-size:14px;">분석 완료</span>
-          <span style="background:${confColor}18;border:1px solid ${confColor}40;color:${confColor};font-size:11px;padding:1px 8px;border-radius:9999px;font-weight:600;">신뢰도 ${confLabel}</span>
-        </div>
-        ${r.note ? `<div style="color:#64748b;font-size:12px;background:#f8fafc;border-radius:6px;padding:7px 10px;border-left:3px solid #d97706;">${esc(r.note)}</div>` : ''}
-        ${total > 0 ? `<div style="color:#1d4ed8;font-size:13px;font-weight:700;margin-top:6px;">합계 ${fmtW(total)}</div>` : ''}
-      </div>
-    </div>
-    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:14px;margin-bottom:14px;">
-      <div style="color:#475569;font-size:11px;font-weight:600;margin-bottom:10px;display:flex;align-items:center;gap:5px;">${I.spark} 추출된 정보 (수정 가능)</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-        <div style="grid-column:1/-1;"><label style="font-size:11px;color:#64748b;">거래처</label><select id="sc_clientId" style="${ISX}margin-top:3px;font-size:14px;"><option value="">-- 선택 --</option>${clientOpts}</select>${r.supplierName?`<div style="color:#94a3b8;font-size:10px;margin-top:3px;">📷 인식된 상호: ${esc(r.supplierName)}</div>`:''}</div>
-        <div><label style="font-size:11px;color:#64748b;">거래일자</label><input id="sc_date" type="date" value="${esc(r.date||localDate())}" style="${ISX}margin-top:3px;"></div>
-        <div><label style="font-size:11px;color:#64748b;">공급가액</label><input id="sc_amount" type="text" value="${fmt(+r.amount||0)}" oninput="applyAmtFmt(this);scUpdateTotal()" style="${ISX}margin-top:3px;"></div>
-        <div><label style="font-size:11px;color:#64748b;">세액</label><input id="sc_tax" type="text" value="${fmt(+r.tax||0)}" oninput="applyAmtFmt(this);scUpdateTotal()" style="${ISX}margin-top:3px;"></div>
-        <div style="grid-column:1/-1;"><label style="font-size:11px;color:#64748b;">적요</label><input id="sc_memo" type="text" value="${esc(r.memo||'')}" placeholder="거래 내용" style="${ISX}margin-top:3px;"></div>
-      </div>
-      <div id="scTotal" style="margin-top:10px;"></div>
-    </div>
-    <div style="display:flex;gap:8px;">
-      <button type="button" onclick="openScanInput()" style="padding:10px 14px;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:8px;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:5px;">${I.camera} 재촬영</button>
-      <button type="button" onclick="closeScanModal()" style="flex:1;padding:10px 0;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:8px;font-size:13px;cursor:pointer;">취소</button>
-      <button type="button" onclick="applyScanResult()" style="flex:2;padding:10px 0;background:#d97706;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;">매입 거래로 추가</button>
-    </div>`);
-}
-
-function scUpdateTotal() {
-  const amt = parseInt((document.getElementById('sc_amount')?.value || '').replace(/[^0-9]/g, '')) || 0;
-  const tax = parseInt((document.getElementById('sc_tax')?.value || '').replace(/[^0-9]/g, '')) || 0;
-  const el  = document.getElementById('scTotal'); if (!el) return;
-  if (amt > 0 || tax > 0) {
-    el.style.cssText = 'background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:8px 12px;display:flex;justify-content:space-between;align-items:center;';
-    el.innerHTML = `<span style="color:#1d4ed8;font-size:12px;">합계 금액</span><span style="color:#1d4ed8;font-weight:700;font-size:15px;">${fmtW(amt + tax)}</span>`;
-  } else { el.style.cssText = ''; el.innerHTML = ''; }
-}
-
-async function applyScanResult() {
-  const clientId = Number(document.getElementById('sc_clientId')?.value);
-  const amtRaw   = (document.getElementById('sc_amount')?.value || '').replace(/[^0-9]/g, '');
-  const taxRaw   = (document.getElementById('sc_tax')?.value || '').replace(/[^0-9]/g, '');
-  const dateVal  = document.getElementById('sc_date')?.value;
-  const memo     = document.getElementById('sc_memo')?.value || '';
-  if (!clientId) { showToast('거래처를 선택하세요.'); return; }
-  if (!amtRaw)   { showToast('금액을 입력하세요.'); return; }
-  if (!dateVal)  { showToast('거래일자를 확인하세요.'); return; }
-  const tx = { date:dateVal, clientId, type:'매입', amount:parseInt(amtRaw)||0, tax:parseInt(taxRaw)||0, memo, status:TX_STATUS.UNBILLED, id:nextId(S.transactions) };
-  S.transactions = [...S.transactions, tx];
-  saveTX();
-  URL.revokeObjectURL(M.scanModal?.previewUrl);
-  M.scanModal = null;
-  S.view = 'transactions';
-  render(); showToast('매입 거래가 추가됐습니다.');
-}
-function closeScanModal() { if (M.scanModal?.previewUrl) URL.revokeObjectURL(M.scanModal.previewUrl); M.scanModal = null; renderModals(); }
-
-// ── QUICK PAY ─────────────────────────────────────────────────────────────────
-function openQuickPay(txId) {
-  const t = S.transactions.find(x => x.id === txId); if (!t) return;
-  M.qpModal = { txId, amount: _txRemain(t), method:'cash', cash:0, transfer:0 };
-  _pushModalHistory(); renderModals();
-}
-function closeQuickPay() { M.qpModal = null; render(); }
-
-function buildQuickPayModal() {
-  const mo   = M.qpModal;
-  const t    = S.transactions.find(x => x.id === mo.txId); if (!t) return '';
-  const cl   = S.clients.find(c => c.id === t.clientId);
-  const total = t.amount + t.tax;
-  const already = t.paidAmount || 0;
-  const remain  = total - already;
-  const isSales = t.status === TX_STATUS.UNPAID;
-  const accentColor = isSales ? '#16a34a' : '#1d4ed8';
-  const label   = isSales ? '수금' : '지급';
-  const previewAmt = mo.method === 'mixed' ? (mo.mixCash||0)+(mo.mixTransfer||0) : (mo.amount||0);
-  const carryOver  = S.transactions.filter(x => x.clientId === t.clientId && x.id !== t.id && _txIsPending(x)).reduce((s,x)=>s+_txRemain(x),0);
-  const carryBtn   = carryOver > 0
-    ? `<button onclick="M.qpModal.amount=${carryOver};document.getElementById('qp_amt').value=new Intl.NumberFormat('ko-KR').format(${carryOver});_updatePayPreview('qp');renderModals()" style="padding:5px 9px;border-radius:7px;border:1px solid #fcd34d;background:#fefce8;color:#b45309;font-size:11px;font-weight:600;cursor:pointer;">⏩ 이월액 ${esc(fmtW(carryOver))}</button>` : '';
-  const quickBtns = [
-    { label:'전액', val:remain },
-    ...(remain>=200000?[{label:'절반',val:Math.round(remain/2/1000)*1000}]:[]),
-    ...[500000,300000,200000,100000].filter(v=>v<remain&&v>0).slice(0,2).map(v=>({label:fmtW(v),val:v})),
-  ].slice(0,4).map(b=>`<button onclick="M.qpModal.amount=${b.val};document.getElementById('qp_amt').value=new Intl.NumberFormat('ko-KR').format(${b.val});_updatePayPreview('qp');renderModals()" style="padding:5px 9px;border-radius:7px;border:1px solid #e2e8f0;background:#f8fafc;color:#475569;font-size:11px;cursor:pointer;">${esc(b.label)}</button>`).join('');
-
-  return `
-    <div onclick="closeQuickPay()" style="position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:50;display:flex;align-items:flex-end;justify-content:center;padding-bottom:env(safe-area-inset-bottom);">
-      <div onclick="event.stopPropagation()" style="background:#fff;border-radius:18px 18px 0 0;width:100%;max-width:480px;max-height:90vh;overflow-y:auto;box-shadow:0 -8px 40px rgba(0,0,0,.18);">
-        <div style="width:36px;height:4px;background:#e2e8f0;border-radius:2px;margin:10px auto 0;"></div>
-        <div style="padding:16px 18px 0;display:flex;align-items:center;justify-content:space-between;">
-          <div>
-            <div style="font-weight:700;color:#0f172a;font-size:15px;">${isSales?'💳':'💸'} ${label} 처리</div>
-            <div style="color:#64748b;font-size:12px;margin-top:2px;">${esc(cl?.name||'?')} · ${esc(t.date)}</div>
-          </div>
-          <button onclick="closeQuickPay()" style="background:none;border:none;cursor:pointer;color:#94a3b8;">${I.x}</button>
-        </div>
-        <div style="padding:16px 18px;">
-          <div style="display:grid;grid-template-columns:repeat(${already>0?3:2},1fr);gap:8px;margin-bottom:16px;">
-            <div style="background:#f8fafc;border-radius:8px;padding:10px;text-align:center;"><div style="color:#94a3b8;font-size:10px;">청구금액</div><div style="color:#0f172a;font-size:14px;font-weight:700;">${fmtW(total)}</div></div>
-            ${already>0?`<div style="background:#eff6ff;border-radius:8px;padding:10px;text-align:center;"><div style="color:#94a3b8;font-size:10px;">기수금</div><div style="color:#1d4ed8;font-size:14px;font-weight:700;">${fmtW(already)}</div></div>`:''}
-            <div style="background:#fefce8;border-radius:8px;padding:10px;text-align:center;"><div style="color:#94a3b8;font-size:10px;">잔여금액</div><div style="color:#b45309;font-size:14px;font-weight:700;">${fmtW(remain)}</div></div>
-          </div>
-          <div style="margin-bottom:12px;">
-            <div style="font-size:12px;color:#64748b;margin-bottom:6px;">${label}액</div>
-            <input id="qp_amt" type="text" inputmode="numeric" value="${mo.amount?fmt(mo.amount):''}" placeholder="${fmt(remain)}" style="${ISX}font-size:16px;font-weight:600;" ${FB} oninput="applyAmtFmt(this);M.qpModal.amount=parseInt(this.value.replace(/[^0-9]/g,''))||0;_updatePayPreview('qp')">
-            <div style="display:flex;gap:5px;margin-top:6px;flex-wrap:wrap;">${carryBtn}${quickBtns}</div>
-          </div>
-          <div style="margin-bottom:12px;"><div style="font-size:12px;color:#64748b;margin-bottom:6px;">결제 수단</div>${_methodTabs(mo.method,'qp')}${_mixedInputs(mo.method,'qp')}</div>
-          <div id="qp_preview" style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px;font-size:12px;margin-bottom:12px;display:${previewAmt>0?'block':'none'};">
-            ${previewAmt>0?(previewAmt>=remain?'<span style="color:#16a34a;font-weight:600;">✅ 전액 수금 완료</span>':`<span style="color:#b45309;">💳 부분 수금 · 잔여 <b>${fmtW(remain-previewAmt)}</b></span>`):''}
-          </div>
-          <div style="display:flex;gap:8px;">
-            <button onclick="closeQuickPay()" style="flex:1;padding:11px;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:10px;font-size:13px;cursor:pointer;">취소</button>
-            <button onclick="confirmQuickPay()" style="flex:2;padding:11px;border:none;background:${accentColor};color:#fff;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;">${label} 처리</button>
-          </div>
-        </div>
-      </div>
-    </div>`;
-}
-
-function confirmQuickPay() {
-  const mo   = M.qpModal;
-  const t    = S.transactions.find(x => x.id === mo.txId); if (!t) return;
-  const already = t.paidAmount || 0;
-  const remain  = (t.amount + t.tax) - already;
-  const amt     = mo.method === 'mixed' ? (mo.mixCash||0)+(mo.mixTransfer||0) : (mo.amount||0);
-  if (amt <= 0)     { showToast('금액을 입력하세요.'); return; }
-  if (amt > remain) { showToast('잔여금액보다 많습니다.'); return; }
-  const isFull          = amt >= remain;
-  const paidMethodDetail = mo.method === 'mixed' ? { cash: mo.mixCash||0, transfer: mo.mixTransfer||0 } : null;
-  const paidAt          = new Date().toISOString();
-  let updatedTx = null;
-  S.transactions = S.transactions.map(tx => {
-    if (tx.id !== mo.txId) return tx;
-    const next = { ...tx, paidAmount: already + amt, paidAt, paidMethod: mo.method };
-    if (paidMethodDetail) next.paidMethodDetail = paidMethodDetail;
-    if (isFull) next.status = tx.status === TX_STATUS.UNPAID ? TX_STATUS.PAID : TX_STATUS.BILLED;
-    delete next.dlControlled; // CRM이 직접 처리 → 거래장 우선권 해제
-    updatedTx = next; return next;
-  });
-  if (updatedTx) _saveOneTx(updatedTx); else saveTX();
-  lsSet('crm_tx', S.transactions);
-  closeQuickPay();
-  const icon = mo.method === 'transfer' ? '🏦' : mo.method === 'mixed' ? '🔀' : '💵';
-  showToast(icon + ' ' + (isFull ? '완납 처리' : '부분 수금 처리'));
-  _afterNapumPatch(updatedTx);
-}
-
-// ── 일괄 수금 ─────────────────────────────────────────────────────────────────
-function openBatchPay(clientId) {
-  const pending = S.transactions.filter(t => t.clientId === clientId && t.status === TX_STATUS.UNPAID).sort((a,b)=>a.date.localeCompare(b.date));
-  if (!pending.length) { showToast('미수금이 없습니다.'); return; }
-  M.batchPayModal = { clientId, amount: pending.reduce((s,t)=>s+_txRemain(t),0), method:'cash', cash:0, transfer:0 };
-  _pushModalHistory(); renderModals();
-}
-function closeBatchPay() { M.batchPayModal = null; render(); }
-
-function _renderBatchPreview() {
-  const mo  = M.batchPayModal;
-  const el  = document.getElementById('bp_preview'); if (!el) return;
-  const pending = S.transactions.filter(t=>t.clientId===mo.clientId&&t.status===TX_STATUS.UNPAID).sort((a,b)=>a.date.localeCompare(b.date));
-  const amt = mo.method === 'mixed' ? (mo.mixCash||0)+(mo.mixTransfer||0) : (mo.amount||0);
-  if (amt <= 0) { el.style.display = 'none'; return; }
-  el.style.display = 'block';
-  let remain = amt;
-  const rows = [];
-  for (const t of pending) {
-    if (remain <= 0) break;
-    const due   = _txRemain(t);
-    const apply = Math.min(due, remain);
-    remain -= apply;
-    rows.push(`<div style="display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #f1f5f9;font-size:12px;">
-      <span style="color:#64748b;">${esc(t.date)} ${esc(t.memo?.slice(0,10)||'')}</span>
-      <span>${fmtW(apply)} ${apply>=due?'<span style="color:#16a34a;">→ 완납 ✅</span>':`<span style="color:#b45309;">→ 잔여 ${fmtW(due-apply)}</span>`}</span>
-    </div>`);
-  }
-  const afterTotal = pending.reduce((s,t)=>s+_txRemain(t),0)-Math.min(amt,pending.reduce((s,t)=>s+_txRemain(t),0));
-  rows.push(`<div style="display:flex;justify-content:space-between;padding:7px 0;font-size:12px;font-weight:600;"><span style="color:#64748b;">입금 후 잔여 미수금</span><span style="color:${afterTotal>0?'#b45309':'#16a34a'};">${fmtW(afterTotal)}</span></div>`);
-  el.innerHTML = rows.join('');
-}
-
-function buildBatchPayModal() {
-  const mo      = M.batchPayModal;
-  const cl      = S.clients.find(c => c.id === mo.clientId);
-  const pending = S.transactions.filter(t=>t.clientId===mo.clientId&&t.status===TX_STATUS.UNPAID).sort((a,b)=>a.date.localeCompare(b.date));
-  const totalRemain = pending.reduce((s,t)=>s+_txRemain(t),0);
-  const _thisYm     = localDate(new Date()).slice(0,7);
-  const carryAmt    = pending.filter(t=>t.date.slice(0,7)<_thisYm).reduce((s,t)=>s+_txRemain(t),0);
-  const carryBtn    = carryAmt > 0
-    ? `<button onclick="M.batchPayModal.amount=${carryAmt};document.getElementById('bp_amt').value=new Intl.NumberFormat('ko-KR').format(${carryAmt});_renderBatchPreview()" style="padding:5px 9px;border-radius:7px;border:1px solid #fcd34d;background:#fefce8;color:#b45309;font-size:11px;font-weight:600;cursor:pointer;white-space:nowrap;">⏩ 이월액 ${esc(fmtW(carryAmt))}</button>` : '';
-  const quickBtns = [
-    { label:`전액 ${fmtW(totalRemain)}`, val:totalRemain },
-    ...(totalRemain>=200000?[{label:'절반',val:Math.round(totalRemain/2/1000)*1000}]:[]),
-    ...[1000000,500000,300000,200000,100000].filter(v=>v<totalRemain).slice(0,2).map(v=>({label:fmtW(v),val:v})),
-  ].slice(0,4).map(b=>`<button onclick="M.batchPayModal.amount=${b.val};document.getElementById('bp_amt').value=new Intl.NumberFormat('ko-KR').format(${b.val});_renderBatchPreview()" style="padding:5px 9px;border-radius:7px;border:1px solid #e2e8f0;background:#f8fafc;color:#475569;font-size:11px;cursor:pointer;white-space:nowrap;">${esc(b.label)}</button>`).join('');
-
-  return `
-    <div onclick="closeBatchPay()" style="position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:50;display:flex;align-items:flex-end;justify-content:center;padding-bottom:env(safe-area-inset-bottom);">
-      <div onclick="event.stopPropagation()" style="background:#fff;border-radius:18px 18px 0 0;width:100%;max-width:480px;max-height:90vh;overflow-y:auto;box-shadow:0 -8px 40px rgba(0,0,0,.18);">
-        <div style="width:36px;height:4px;background:#e2e8f0;border-radius:2px;margin:10px auto 0;"></div>
-        <div style="padding:16px 18px 0;display:flex;align-items:center;justify-content:space-between;">
-          <div><div style="font-weight:700;color:#0f172a;font-size:15px;">💰 일괄 수금</div><div style="color:#64748b;font-size:12px;margin-top:2px;">${esc(cl?.name||'?')} · 미수 ${pending.length}건 · ${fmtW(totalRemain)}</div></div>
-          <button onclick="closeBatchPay()" style="background:none;border:none;cursor:pointer;color:#94a3b8;">${I.x}</button>
-        </div>
-        <div style="padding:16px 18px;">
-          <div style="margin-bottom:12px;">
-            <div style="font-size:12px;color:#64748b;margin-bottom:6px;">입금액</div>
-            <input id="bp_amt" type="text" inputmode="numeric" value="${mo.amount?fmt(mo.amount):''}" placeholder="${fmt(totalRemain)}" style="${ISX}font-size:16px;font-weight:600;" ${FB} oninput="applyAmtFmt(this);M.batchPayModal.amount=parseInt(this.value.replace(/[^0-9]/g,''))||0;_renderBatchPreview()">
-            ${carryBtn?`<div style="margin-top:6px;">${carryBtn}</div>`:''}
-            <div style="display:flex;gap:5px;margin-top:6px;flex-wrap:wrap;">${quickBtns}</div>
-          </div>
-          <div style="margin-bottom:12px;"><div style="font-size:12px;color:#64748b;margin-bottom:6px;">결제 수단</div>${_methodTabs(mo.method,'bp')}${_mixedInputs(mo.method,'bp')}</div>
-          <div style="font-size:12px;color:#64748b;margin-bottom:6px;">배분 미리보기</div>
-          <div id="bp_preview" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;padding:10px;font-size:12px;margin-bottom:14px;display:none;"></div>
-          <div style="display:flex;gap:8px;">
-            <button onclick="closeBatchPay()" style="flex:1;padding:11px;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:10px;font-size:13px;cursor:pointer;">취소</button>
-            <button onclick="confirmBatchPay()" style="flex:2;padding:11px;border:none;background:#16a34a;color:#fff;border-radius:10px;font-size:13px;font-weight:700;cursor:pointer;">수금 처리</button>
-          </div>
-        </div>
-      </div>
-    </div>`;
-}
-
-function confirmBatchPay() {
-  const mo      = M.batchPayModal;
-  const pending = S.transactions.filter(t=>t.clientId===mo.clientId&&t.status===TX_STATUS.UNPAID).sort((a,b)=>a.date.localeCompare(b.date));
-  const amt     = mo.method === 'mixed' ? (mo.mixCash||0)+(mo.mixTransfer||0) : (mo.amount||0);
-  if (amt <= 0) { showToast('금액을 입력하세요.'); return; }
-  const paidAt          = new Date().toISOString();
-  const paidMethodDetail = mo.method === 'mixed' ? { cash:mo.mixCash||0, transfer:mo.mixTransfer||0 } : null;
-  let remain = amt;
-  const updatedTxs = [];
-  S.transactions = S.transactions.map(tx => {
-    if (pending.find(p=>p.id===tx.id) && remain > 0) {
-      const due   = _txRemain(tx);
-      const apply = Math.min(due, remain);
-      remain -= apply;
-      const isFull = apply >= due;
-      const next   = { ...tx, paidAmount:(tx.paidAmount||0)+apply, paidAt, paidMethod:mo.method };
-      if (paidMethodDetail) next.paidMethodDetail = paidMethodDetail;
-      if (isFull) next.status = TX_STATUS.PAID;
-      updatedTxs.push(next); return next;
-    }
-    return tx;
-  });
-  lsSet('crm_tx', S.transactions);
-  if (updatedTxs.length === 1) _saveOneTx(updatedTxs[0]); else saveTX();
-
-  const _napumTxsSnap = updatedTxs.filter(t => t._napumId).map(t => ({ ...t }));
-  const _iconSnap     = mo.method === 'transfer' ? '🏦' : mo.method === 'mixed' ? '🔀' : '💵';
-  const _countSnap    = updatedTxs.length;
-
-  closeBatchPay();
-  showToast(`${_iconSnap} ${_countSnap}건 수금 처리`);
-
-  if (_napumTxsSnap.length > 0) {
-    _napumTxsSnap.forEach(t => _napumOwnPatchKeys.add(t._napumId));
-    Promise.all(_napumTxsSnap.map(t => _patchNapumOrder(t._napumId, _buildNapumPatch(t))))
-      .then(results => {
-        const ok   = results.filter(Boolean).length;
-        const fail = results.length - ok;
-        showToast(fail > 0 ? `📦 납품 관리 ${ok}건 반영 / ⚠️ ${fail}건 실패` : `📦 납품 관리 ${ok}건 반영됨`);
-        // 패치 성공한 tx들 즉시 re-fetch해 CRM UI 갱신
-        _napumTxsSnap.forEach((t, i) => {
-          if (results[i]) _refetchNapumOrderAfterPatch(t._napumId);
-          else _napumOwnPatchKeys.delete(t._napumId);
+// ─── 대시보드 렌더 후 sparklines & count-up 실행 ───
+let _dashSparkTimer = null;
+renderDashboard = _safeWrap(renderDashboard, function() {
+    if (_dashSparkTimer) clearTimeout(_dashSparkTimer);
+    _dashSparkTimer = setTimeout(() => {
+        _dashSparkTimer = null;
+        renderSparklines();
+        ['dashSales','dashUnpaid'].forEach(id => {
+            const el = document.getElementById(id);
+            if (!el) return;
+            const raw = el.textContent.replace(/,/g,'');
+            const num = parseFloat(raw);
+            if (!isNaN(num) && num > 0) animateCount(el, num);
         });
-      }).catch(() => {
-        _napumTxsSnap.forEach(t => _napumOwnPatchKeys.delete(t._napumId));
-        showToast('⚠️ 납품 관리 반영 실패');
-      });
-  }
+    }, 50);
+});
+
+// ─── renderSettlement 후킹 (바차트 추가) ───
+renderSettlement = _safeWrap(renderSettlement, function() {
+    const month = document.getElementById('settlementMonth')?.value || todayKST().slice(0,7);
+    renderSettleBarChart(month);
+});
+renderSettlementDaily = _safeWrap(renderSettlementDaily, function() {
+    const date = document.getElementById('settlementDateDaily')?.value || todayKST();
+    renderSettleBarChart(date.slice(0,7));
+});
+renderSettlementQuarterly = _safeWrap(renderSettlementQuarterly, function() {
+    const year = document.getElementById('settlementYear')?.value || todayKST().slice(0,4);
+    renderSettleBarChart(year + '-01');
+});
+
+// ─── updateInfoCounts 후킹 (배지 갱신) ───
+updateInfoCounts = _safeWrap(updateInfoCounts, function() { updateNavBadges(); });
+
+// ─── renderClients 후킹 (스와이프 초기화) ───
+renderClients = _safeWrap(renderClients, function() { _clientSwipeInited = false; initClientSwipe(); });
+
+
+// ─── 달걀 품목 초기 등록 ───
+const EGG_ITEMS_DEFAULT = [
+    { name:'왕란', unit:'판', low:5, danger:2, note:'왕란' },
+    { name:'특란', unit:'판', low:5, danger:2, note:'특란' },
+    { name:'대란', unit:'판', low:5, danger:2, note:'대란' },
+    { name:'중란', unit:'판', low:5, danger:2, note:'중란' },
+];
+
+// ─── 초기화 ───
+
+// ─── 스와이프 제스처 ───
+
+function initSwipeGestures() {
+    let startX=0, startY=0, blocked=false;
+    const content = document.getElementById('mainContent');
+    content.addEventListener('touchstart', e=>{
+        blocked = !!e.target.closest('.table-wrap') ||
+                  !!e.target.closest('#settlementTable');
+        startX = e.changedTouches[0].screenX;
+        startY = e.changedTouches[0].screenY;
+    }, {passive:true});
+    content.addEventListener('touchend', e=>{
+        if (blocked) return;
+        const dx = e.changedTouches[0].screenX - startX;
+        const dy = e.changedTouches[0].screenY - startY;
+        // 수평 이동이 수직 이동의 1.5배 이상이어야 탭 전환 (대각선 스크롤 방지)
+        if (Math.abs(dx) < 60) return;
+        if (Math.abs(dy) > Math.abs(dx) * 0.7) return;
+        const active = document.querySelector('.pane.active');
+        const id = active?.id?.replace('pane-','');
+        const idx = TAB_ORDER.indexOf(id);
+        if (idx===-1) return;
+        if (dx>0 && idx>0) showTab(TAB_ORDER[idx-1]);
+        if (dx<0 && idx<TAB_ORDER.length-1) showTab(TAB_ORDER[idx+1]);
+    }, {passive:true});
 }
 
-// ── RENDER ────────────────────────────────────────────────────────────────────
-function render() {
-  const fid = document.activeElement?.id;
-  const ss  = document.activeElement?.selectionStart;
-  const se  = document.activeElement?.selectionEnd;
+// ─── Pull-to-Refresh ───
 
-  let content = '';
-  if      (S.view === 'dashboard')    { checkDashLock(); content = S.dashLocked ? buildDashLockScreen() : buildDashboard(); }
-  else if (S.view === 'clients')      content = buildClients();
-  else if (S.view === 'transactions') content = buildTransactions();
-  else if (S.view === 'receivables')  content = buildReceivables();
+function initPullToRefresh() {
+    const content   = document.getElementById('mainContent');
+    const indicator = document.getElementById('pullIndicator');
+    const pullText  = document.getElementById('pullText');
+    const THRESHOLD = 65;   // 놓을 때 새로고침 발동 기준 (px)
+    const MAX_PULL  = 110;  // 최대 당김 거리 (px)
 
-  document.getElementById('app').innerHTML = `
-    <aside class="sidebar">${sidebarInner()}</aside>
-    <div class="main-col">
-      ${buildMobileHeader()}
-      <main style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;background:#f1f5f9;">
-        <div id="mainContent" class="pad-main" style="max-width:1100px;margin:0 auto;padding:22px 20px;">${content}</div>
-      </main>
-      ${buildBottomNav()}
-    </div>`;
+    let startY = 0;
+    let pulling = false;
+    let isRefreshing = false;
+    let startScrollTop = 0;
 
-  document.getElementById('modal-root').innerHTML = buildDrawer();
-  renderModals();
-  if (fid) { const el = document.getElementById(fid); if (el) { el.focus(); try { if (ss != null) el.setSelectionRange(ss, se); } catch {} } }
-}
+    content.addEventListener('touchstart', e => {
+        if (isRefreshing) return;
+        startScrollTop = content.scrollTop;
+        // 스크롤이 최상단일 때만 pull 시작
+        if (startScrollTop > 2) return;
+        startY = e.touches[0].clientY;
+        pulling = false;
+    }, { passive: true });
 
-function renderContent() {
-  const fid = document.activeElement?.id;
-  const ss  = document.activeElement?.selectionStart;
-  const se  = document.activeElement?.selectionEnd;
-  let html = '';
-  if      (S.view === 'clients')      html = buildClients();
-  else if (S.view === 'transactions') html = buildTransactions();
-  else if (S.view === 'receivables')  html = buildReceivables();
-  const mc = document.getElementById('mainContent'); if (mc) mc.innerHTML = html;
-  if (fid) { const el = document.getElementById(fid); if (el) { el.focus(); try { if (ss != null) el.setSelectionRange(ss, se); } catch {} } }
-}
+    content.addEventListener('touchmove', e => {
+        if (isRefreshing) return;
+        if (content.scrollTop > 2) return; // 스크롤 내려가 있으면 무시
+        const dy = e.touches[0].clientY - startY;
+        if (dy < 10) return; // 아래 방향 최소 이동
 
-function renderModals() {
-  const root   = document.getElementById('modal-root');
-  const drawer = buildDrawer();
-  if      (_pinModal)           root.innerHTML = drawer + buildPinModal();
-  else if (M.confirm)           root.innerHTML = drawer + buildConfirm();
-  else if (M.scanModal)         root.innerHTML = drawer + buildScanModal();
-  else if (M.syncModal)         root.innerHTML = drawer + buildSyncModal();
-  else if (M.statModal)         root.innerHTML = drawer + buildStatModal();
-  else if (M.resetModal)        root.innerHTML = drawer + buildResetModal();
-  else if (M.backupModal)       root.innerHTML = drawer + buildBackupModal();
-  else if (M.qpModal)           root.innerHTML = drawer + buildQuickPayModal();
-  else if (M.batchPayModal)     root.innerHTML = drawer + buildBatchPayModal();
-  else if (M.clientModal)       root.innerHTML = drawer + buildClientModal();
-  else if (M.txModal)           root.innerHTML = drawer + buildTxModal();
-  else                          root.innerHTML = drawer;
-}
+        pulling = true;
 
-// ── HANDLERS ─────────────────────────────────────────────────────────────────
-function goToClientTx(clientId, isSales) {
-  const cl = S.clients.find(c => c.id === clientId);
-  S.txSearch      = cl ? cl.name : '';
-  S.txTf          = '전체';
-  S.txSf          = isSales ? TX_STATUS.UNPAID : TX_STATUS.UNBILLED;
-  S.txPeriodMode  = 'all';
-  S.txMonth       = '전체';
-  S.view          = 'transactions';
-  render();
-}
-// ── DASHBOARD PIN 잠금 시스템 ─────────────────────────────────────────────────
-const PIN_KEY      = 'crm_dash_pin';   // localStorage: SHA-256 해시 저장
-const PIN_TS_KEY   = 'crm_dash_pin_ts'; // 마지막 인증 시각
-const PIN_TIMEOUT  = 5 * 60 * 1000;    // 5분 비활성 시 자동 잠금
+        const pull = Math.min(dy * 0.6, MAX_PULL); // 저항감 0.6배
 
-function _pinHash(pin) {
-  // 간단한 해시 (SHA-256 없이 빠른 djb2 변형)
-  let h = 5381;
-  for (let i = 0; i < pin.length; i++) h = (h * 33) ^ pin.charCodeAt(i);
-  return (h >>> 0).toString(16) + pin.length;
-}
-function hasDashPin()    { return !!localStorage.getItem(PIN_KEY); }
-function checkDashPin(p) { return localStorage.getItem(PIN_KEY) === _pinHash(p); }
-function saveDashPin(p)  { localStorage.setItem(PIN_KEY, _pinHash(p)); localStorage.setItem(PIN_TS_KEY, '0'); }
-function clearDashPin()  { localStorage.removeItem(PIN_KEY); localStorage.removeItem(PIN_TS_KEY); S.dashLocked = false; }
-function _stampPinAuth() { localStorage.setItem(PIN_TS_KEY, Date.now().toString()); }
-function _isPinExpired() {
-  const ts = parseInt(localStorage.getItem(PIN_TS_KEY) || '0', 10);
-  return Date.now() - ts > PIN_TIMEOUT;
-}
+        indicator.style.height = pull + 'px';
+        indicator.classList.toggle('releasing', pull >= THRESHOLD);
+        indicator.classList.remove('refreshing');
 
-// 앱 시작 / 뷰 전환 시 PIN 만료 체크
-function checkDashLock() {
-  if (!hasDashPin()) { S.dashLocked = false; return; }
-  if (_isPinExpired()) S.dashLocked = true;
-  // 만료 안됐으면 기존 dashLocked 상태 유지 (한번 잠기면 명시적 해제 전까지 유지)
-}
-
-// PIN 모달 상태
-let _pinModal = null; // null | {mode:'unlock'|'set'|'change'|'remove', step:'input'|'confirm', buf:'', first:''}
-
-function openPinModal(mode) {
-  _pinModal = { mode, step: 'input', buf: '', first: '' };
-  renderModals();
-}
-function closePinModal() { _pinModal = null; renderModals(); }
-
-function _pinTitle() {
-  const m = _pinModal?.mode;
-  if (m === 'unlock') return '🔒 대시보드 잠금 해제';
-  if (m === 'set')    return '🔑 PIN 번호 설정';
-  if (m === 'change') return _pinModal.step === 'input' ? '🔑 현재 PIN 입력' : '🔑 새 PIN 입력';
-  if (m === 'remove') return '🔑 PIN 입력 후 삭제';
-  return '';
-}
-function _pinSubtitle() {
-  const { mode, step } = _pinModal;
-  if (mode === 'unlock') return '4자리 PIN을 입력하세요';
-  if (mode === 'set')    return step === 'input'   ? '사용할 4자리 PIN을 입력하세요' : 'PIN을 한 번 더 입력하세요';
-  if (mode === 'change') return step === 'input'   ? '현재 PIN을 입력하세요'         :
-                                step === 'new'     ? '새 PIN을 입력하세요'           : '새 PIN을 한 번 더 입력하세요';
-  if (mode === 'remove') return 'PIN을 입력하면 잠금이 해제됩니다';
-  return '';
-}
-
-function _pinPressKey(k) {
-  if (!_pinModal) return;
-  if (_pinModal.buf.length >= 4) return;
-  _pinModal.buf += k;
-  renderModals();
-  if (_pinModal.buf.length === 4) setTimeout(_pinSubmit, 120);
-}
-function _pinBackspace() {
-  if (!_pinModal) return;
-  _pinModal.buf = _pinModal.buf.slice(0, -1);
-  renderModals();
-}
-
-function _pinSubmit() {
-  if (!_pinModal) return;
-  const { mode, step, buf, first } = _pinModal;
-
-  if (mode === 'unlock') {
-    if (checkDashPin(buf)) {
-      _stampPinAuth(); S.dashLocked = false; closePinModal(); render();
-      showToast('✅ 잠금이 해제됐습니다');
-    } else {
-      _pinModal.buf = ''; renderModals(); showToast('❌ PIN이 맞지 않습니다');
-    }
-    return;
-  }
-  if (mode === 'remove') {
-    if (checkDashPin(buf)) {
-      clearDashPin(); closePinModal(); render();
-      showToast('🔓 PIN 잠금이 해제됐습니다');
-    } else {
-      _pinModal.buf = ''; renderModals(); showToast('❌ PIN이 맞지 않습니다');
-    }
-    return;
-  }
-  if (mode === 'set') {
-    if (step === 'input') {
-      _pinModal.first = buf; _pinModal.buf = ''; _pinModal.step = 'confirm'; renderModals();
-    } else {
-      if (buf === first) {
-        saveDashPin(buf); closePinModal(); render(); showToast('🔑 PIN이 설정됐습니다');
-      } else {
-        _pinModal.buf = ''; _pinModal.step = 'input'; _pinModal.first = '';
-        renderModals(); showToast('❌ PIN이 일치하지 않습니다. 다시 입력하세요');
-      }
-    }
-    return;
-  }
-  if (mode === 'change') {
-    if (step === 'input') {
-      if (checkDashPin(buf)) {
-        _pinModal.step = 'new'; _pinModal.buf = ''; renderModals();
-      } else {
-        _pinModal.buf = ''; renderModals(); showToast('❌ PIN이 맞지 않습니다');
-      }
-    } else if (step === 'new') {
-      _pinModal.first = buf; _pinModal.buf = ''; _pinModal.step = 'confirm'; renderModals();
-    } else {
-      if (buf === first) {
-        saveDashPin(buf); closePinModal(); render(); showToast('🔑 PIN이 변경됐습니다');
-      } else {
-        _pinModal.buf = ''; _pinModal.step = 'new'; _pinModal.first = '';
-        renderModals(); showToast('❌ PIN이 일치하지 않습니다. 다시 입력하세요');
-      }
-    }
-  }
-}
-
-function buildPinModal() {
-  const { buf } = _pinModal;
-  const dots = [0,1,2,3].map(i =>
-    `<div style="width:14px;height:14px;border-radius:50%;background:${i < buf.length ? '#b45309' : '#e2e8f0'};border:2px solid ${i < buf.length ? '#b45309' : '#cbd5e1'};transition:background .15s;"></div>`
-  ).join('');
-  const keys = ['1','2','3','4','5','6','7','8','9','','0','⌫'];
-  const keyBtns = keys.map(k => {
-    if (k === '') return `<div></div>`;
-    if (k === '⌫') return `<button onclick="_pinBackspace()" style="background:#f1f5f9;border:none;border-radius:12px;height:60px;font-size:20px;cursor:pointer;color:#475569;">⌫</button>`;
-    return `<button onclick="_pinPressKey('${k}')" style="background:#fff;border:1px solid #e2e8f0;border-radius:12px;height:60px;font-size:20px;font-weight:600;cursor:pointer;color:#0f172a;active:background:#fef3c7;">${k}</button>`;
-  }).join('');
-
-  return `<div onclick="closePinModal()" style="position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:1000;display:flex;align-items:flex-end;justify-content:center;">
-    <div onclick="event.stopPropagation()" style="background:#fff;border-radius:20px 20px 0 0;width:100%;max-width:420px;padding:28px 24px 40px;">
-      <div style="width:40px;height:4px;background:#e2e8f0;border-radius:2px;margin:0 auto 20px;"></div>
-      <div style="text-align:center;font-size:17px;font-weight:700;color:#0f172a;margin-bottom:6px;">${_pinTitle()}</div>
-      <div style="text-align:center;font-size:13px;color:#64748b;margin-bottom:24px;">${_pinSubtitle()}</div>
-      <div style="display:flex;justify-content:center;gap:16px;margin-bottom:28px;">${dots}</div>
-      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;">${keyBtns}</div>
-    </div>
-  </div>`;
-}
-
-function buildDashLockScreen() {
-  return `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:60vh;gap:16px;padding:40px 24px;text-align:center;">
-    <div style="font-size:56px;">🔒</div>
-    <div style="font-size:18px;font-weight:700;color:#0f172a;">대시보드가 잠겨 있습니다</div>
-    <div style="font-size:13px;color:#64748b;">PIN 번호를 입력하면 내용을 볼 수 있습니다</div>
-    <button onclick="openPinModal('unlock')" style="margin-top:8px;padding:13px 36px;background:#b45309;color:#fff;border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;">🔑 PIN 입력</button>
-  </div>`;
-}
-
-function setView(v) { S.view = v; render(); }
-
-function setCSearch(v) {
-  S.cSearch = v;
-  const el = document.getElementById('cListRows');
-  if (el) el.innerHTML = _buildCRows(); else renderContent();
-}
-function setCFilter(v)   { S.cFilter = v; renderContent(); }
-function setCGroupFilter(v) { S.cGroupFilter = v; renderContent(); } // ★ v89 납품 그룹 필터
-function setCWsFilter(v) { S.cWsFilter = v; renderContent(); }
-function setRcvSearch(v) {
-  S.rcvSearch = v;
-  const el = document.getElementById('rcvListArea');
-  if (el) el.innerHTML = _buildRcvSections(); else renderContent();
-}
-function setRcvPeriod(p) {
-  S.rcvPeriod = p;
-  // month 선택 시 현재 월로 초기화
-  if (p === 'month') {
-    const d = new Date();
-    S.rcvMonth = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-  }
-  render();
-}
-function rcvMonthMove(delta) {
-  const [y, m] = S.rcvMonth.split('-').map(Number);
-  const d = new Date(y, m - 1 + delta, 1);
-  S.rcvMonth = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
-  render();
-}
-
-function toggleExpand(id) { S.cExpanded = S.cExpanded === id ? null : id; renderContent(); }
-function setTxSearch(v) {
-  S.txSearch = v;
-  const el = document.getElementById('txListRows');
-  if (el) el.innerHTML = _buildTxRowsOnly(); else renderContent();
-}
-function setTxTf(v)       { S.txTf = v; renderContent(); }
-function setTxWsFilter(v) { S.txWsFilter = v; renderContent(); }
-function setTxSf(v)       { S.txSf = v; renderContent(); }
-function setTxMonth(v)    { S.txMonth = v; render(); }
-function setTxPeriodMode(mode) {
-  S.txPeriodMode = mode;
-  if (mode === 'monthly') S.txMonth = thisMonth();
-  if (mode === 'daily')   S.txDate  = localDate();
-  if (mode === 'weekly')  S.txWeek  = _weekOf(localDate());
-  if (mode === 'all')     S.txMonth = '전체';
-  render();
-}
-function openDrawer()  { S.drawerOpen = true;  renderModals(); }
-function closeDrawer() { S.drawerOpen = false; renderModals(); }
-
-function openClientModal(x)  { M.clientModal = x === 'add' ? 'add' : S.clients.find(c => c.id === x); _pushModalHistory(); renderModals(); }
-function closeClientModal()  { M.clientModal = null; renderModals(); }
-function editClient(id)      { openClientModal(id); }
-
-function submitClientModal(existId) {
-  existId = existId === 'null' ? null : existId;
-  const name = document.getElementById('cf_name')?.value?.trim();
-  if (!name) { showToast('거래처명을 입력하세요.'); return; }
-  const dupClient = S.clients.find(c => c.name === name && (existId === null || c.id !== existId));
-  if (dupClient) { showToast(`"${name}" 이름의 거래처가 이미 존재합니다.`); return; }
-  const f = {
-    name, bizNo:    document.getElementById('cf_bizNo')?.value?.trim()   || '',
-    rep:    document.getElementById('cf_rep')?.value?.trim()    || '',
-    phone:  document.getElementById('cf_phone')?.value?.trim()  || '',
-    email:  document.getElementById('cf_email')?.value?.trim()  || '',
-    address:document.getElementById('cf_address')?.value?.trim()|| '',
-    type:   document.getElementById('cf_type')?.value           || '매출처',
-    memo:   document.getElementById('cf_memo')?.value?.trim()   || '',
-  };
-  if (existId !== null) f.id = existId;
-  saveClient(f);
-}
-
-function confirmDelClient(id) {
-  const c = S.clients.find(x => x.id === id);
-  M.confirm = { msg:`"${c?.name}"을(를) 삭제하시겠습니까?\n관련 거래 내역도 함께 삭제됩니다.`, okStr:`deleteClient(${id})` };
-  M.clientModal = null; _pushModalHistory(); renderModals();
-}
-
-function openTxModal(x) { M.txModal = x === 'add' ? 'add' : S.transactions.find(t => t.id === x); _pushModalHistory(); renderModals(); }
-function closeTxModal() { M.txModal = null; renderModals(); }
-function editTx(id)     { openTxModal(id); }
-
-function _onTxClientInput(val) {
-  const matched = S.clients.find(c => c.name === val.trim());
-  const hidEl   = document.getElementById('tf_clientId');
-  if (hidEl) hidEl.value = matched ? matched.id : '';
-}
-
-function submitTxModal(existId) {
-  existId = existId === 'null' ? null : existId;
-  const dateVal = document.getElementById('tf_date')?.value;
-  let clientId  = Number(document.getElementById('tf_clientId')?.value) || 0;
-  if (!clientId) {
-    const nameVal = (document.getElementById('tf_clientName')?.value || '').trim();
-    const matched = S.clients.find(c => c.name === nameVal);
-    if (matched) clientId = matched.id;
-  }
-  const amtRaw = (document.getElementById('tf_amount')?.value || '').replace(/[^0-9]/g, '');
-  const taxRaw = (document.getElementById('tf_tax')?.value    || '').replace(/[^0-9]/g, '');
-  if (!dateVal)  { showToast('거래일자를 입력하세요.'); return; }
-  if (!clientId) { showToast('거래처를 선택하세요.'); return; }
-  if (!amtRaw)   { showToast('금액을 입력하세요.'); return; }
-  const amount = parseInt(amtRaw) || 0;
-  const tax    = parseInt(taxRaw) || 0;
-  if (amount < 0 || tax < 0) { showToast('금액은 0 이상이어야 합니다.'); return; }
-  if (existId === null) {
-    const dupTx = S.transactions.find(t =>
-      t.clientId === clientId && t.date === dateVal && t.amount === amount && t.type === (document.getElementById('tf_type')?.value)
-    );
-    if (dupTx) {
-      const cl = S.clients.find(c => c.id === clientId);
-      if (!confirm(`"${cl?.name||''}" ${dateVal} ${fmtW(amount)} 동일 거래가 이미 있습니다.\n계속 등록하시겠습니까?`)) return;
-    }
-  }
-  const _origTx = existId !== null ? S.transactions.find(t => t.id === existId) : null;
-  const taxType = document.getElementById('tf_taxType')?.value || 'taxable';
-  const f = {
-    ...(_origTx || {}),
-    date: dateVal, clientId,
-    type:    document.getElementById('tf_type')?.value,
-    amount, tax: taxType === 'exempt' ? 0 : tax,
-    taxType,
-    memo:    document.getElementById('tf_memo')?.value   || '',
-    status:  document.getElementById('tf_status')?.value,
-  };
-  if (existId !== null) f.id = existId;
-  saveTxFn(f);
-}
-
-function confirmDelTx(id) {
-  M.confirm = { msg:'이 거래를 삭제하시겠습니까?', okStr:`deleteTxFn(${id})` };
-  M.txModal = null; _pushModalHistory(); renderModals();
-}
-
-function onTxTaxType(type) {
-  const hidEl = document.getElementById('tf_taxType');
-  if (hidEl) hidEl.value = type;
-  const taxEl  = document.getElementById('tf_tax');
-  const lblEl  = taxEl?.previousElementSibling || taxEl?.parentElement?.previousElementSibling;
-  const btnTax = document.getElementById('tt_taxable');
-  const btnExe = document.getElementById('tt_exempt');
-  if (type === 'exempt') {
-    if (taxEl) { taxEl.value = ''; taxEl.disabled = true; taxEl.style.background = '#f1f5f9'; taxEl.style.color = '#94a3b8'; }
-    if (btnTax) { btnTax.style.background = '#f8fafc'; btnTax.style.color = '#94a3b8'; }
-    if (btnExe) { btnExe.style.background = '#0369a1'; btnExe.style.color = '#fff'; }
-    // 세액 라벨 업데이트
-    const label = taxEl?.closest('div')?.previousElementSibling;
-    if (label?.tagName === 'LABEL') label.textContent = '세액 (비과세)';
-    const amt = parseInt((document.getElementById('tf_amount')?.value || '').replace(/[^0-9]/g, '')) || 0;
-    updateTxTotal(amt, 0);
-  } else {
-    if (taxEl) { taxEl.disabled = false; taxEl.style.background = ''; taxEl.style.color = ''; }
-    if (btnTax) { btnTax.style.background = '#d97706'; btnTax.style.color = '#fff'; }
-    if (btnExe) { btnExe.style.background = '#f8fafc'; btnExe.style.color = '#94a3b8'; }
-    const label = taxEl?.closest('div')?.previousElementSibling;
-    if (label?.tagName === 'LABEL') label.textContent = '세액 (자동계산)';
-    const amt = parseInt((document.getElementById('tf_amount')?.value || '').replace(/[^0-9]/g, '')) || 0;
-    onTxAmt(String(amt));
-  }
-}
-function onTxAmt(val) {
-  const n        = parseInt(val.replace(/[^0-9]/g, '')) || 0;
-  const taxType  = document.getElementById('tf_taxType')?.value || 'taxable';
-  if (taxType === 'exempt') {
-    updateTxTotal(n, 0);
-    return;
-  }
-  const tax = Math.round(n * 0.1);
-  const tf  = document.getElementById('tf_tax'); if (tf) tf.value = tax ? fmt(tax) : '';
-  updateTxTotal(n, tax);
-}
-function onTxTax(val) {
-  const tax = parseInt(val.replace(/[^0-9]/g, '')) || 0;
-  const amt = parseInt((document.getElementById('tf_amount')?.value || '').replace(/[^0-9]/g, '')) || 0;
-  updateTxTotal(amt, tax);
-}
-function updateTxTotal(amt, tax) {
-  const el = document.getElementById('txTotal'); if (!el) return;
-  if (amt > 0) {
-    el.style.cssText = 'background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 14px;margin-top:12px;display:flex;justify-content:space-between;align-items:center;';
-    el.innerHTML = `<span style="color:#16a34a;font-size:12px;">합계 금액 (공급가+세액)</span><span style="color:#16a34a;font-weight:700;font-size:16px;">${fmtW(amt + tax)}</span>`;
-  } else { el.style.cssText = ''; el.innerHTML = ''; }
-}
-function onTxType(type) {
-  const sel = document.getElementById('tf_status'); if (!sel) return;
-  sel.innerHTML = (type === '매출' ? [TX_STATUS.UNPAID,TX_STATUS.PAID] : [TX_STATUS.UNBILLED,TX_STATUS.BILLED]).map(s => `<option>${esc(s)}</option>`).join('');
-}
-
-// ── SWIPE NAVIGATION ──────────────────────────────────────────────────────────
-(function () {
-  const VIEWS = ['dashboard','clients','transactions','receivables'];
-  let tx0 = null, ty0 = null, startTime = null, swiping = false;
-
-  function onStart(e) {
-    if (M.clientModal||M.txModal||M.confirm||M.scanModal||M.syncModal||M.qpModal||M.batchPayModal||M.statModal||M.resetModal||M.backupModal||S.drawerOpen) return;
-    const t = e.touches ? e.touches[0] : e;
-    tx0 = t.clientX; ty0 = t.clientY; startTime = Date.now(); swiping = true;
-  }
-  function onMove(e) {
-    if (!swiping || tx0 === null) return;
-    const t  = e.touches ? e.touches[0] : e;
-    const dx = t.clientX - tx0, dy = t.clientY - ty0;
-    if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > 10) { swiping = false; return; }
-    if (Math.abs(dx) > 10) e.preventDefault();
-  }
-  function onEnd(e) {
-    if (!swiping || tx0 === null) { swiping = false; tx0 = null; return; }
-    const t  = e.changedTouches ? e.changedTouches[0] : e;
-    const dx = t.clientX - tx0, dy = t.clientY - ty0, dt = Date.now() - startTime;
-    swiping = false; tx0 = null; ty0 = null;
-    if (Math.abs(dx) < 50 || Math.abs(dx) < Math.abs(dy) || dt > 400) return;
-    const cur  = VIEWS.indexOf(S.view); if (cur === -1) return;
-    const next = dx < 0 ? (cur+1 < VIEWS.length ? VIEWS[cur+1] : null) : (cur-1 >= 0 ? VIEWS[cur-1] : null);
-    if (!next) return;
-    const mc = document.getElementById('mainContent');
-    if (mc) {
-      const dir = dx < 0 ? -1 : 1;
-      mc.style.transition = 'transform .22s ease';
-      mc.style.transform  = `translateX(${dir*60}px)`;
-      mc.style.opacity    = '0';
-      setTimeout(() => {
-        setView(next);
-        const mc2 = document.getElementById('mainContent');
-        if (mc2) {
-          mc2.style.transition = 'none';
-          mc2.style.transform  = `translateX(${-dir*60}px)`;
-          mc2.style.opacity    = '0';
-          requestAnimationFrame(() => requestAnimationFrame(() => {
-            mc2.style.transition = 'transform .22s ease, opacity .22s ease';
-            mc2.style.transform  = 'translateX(0)';
-            mc2.style.opacity    = '1';
-          }));
+        if (pull >= THRESHOLD) {
+            pullText.textContent = '놓으면 새로고침';
+        } else {
+            pullText.textContent = '당겨서 새로고침';
         }
-      }, 150);
-    } else { setView(next); }
-  }
-  document.addEventListener('touchstart', onStart, { passive: true });
-  document.addEventListener('touchmove',  onMove,  { passive: false });
-  document.addEventListener('touchend',   onEnd,   { passive: true });
-})();
+    }, { passive: true });
 
-// ── 모달 히스토리 ──────────────────────────────────────────────────────────────
-let _modalDepth = 0;
-function _pushModalHistory() { _modalDepth++; history.pushState({ modal:true, depth:_modalDepth }, ''); }
-function _hasOpenModal() {
-  return !!(M.clientModal||M.txModal||M.confirm||M.scanModal||M.syncModal||M.qpModal||M.batchPayModal||M.resetModal||M.statModal||M.backupModal);
-}
-function _closeTopModal() {
-  if (M.resetModal)    { closeResetModal(); return; }
-  if (M.confirm)       { M.confirm = null; renderModals(); return; }
-  if (M.scanModal)     { closeScanModal(); return; }
-  if (M.backupModal)   { closeBackupModal(); return; }
-  if (M.qpModal)       { closeQuickPay(); return; }
-  if (M.batchPayModal) { closeBatchPay(); return; }
-  if (M.txModal)       { closeTxModal(); return; }
-  if (M.clientModal)   { closeClientModal(); return; }
-  if (M.syncModal)     { closeSyncModal(); return; }
-  if (M.statModal)     { M.statModal = null; renderModals(); return; }
-}
-window.addEventListener('popstate', e => {
-  if (_hasOpenModal()) {
-    e.preventDefault && e.preventDefault();
-    _modalDepth = Math.max(0, _modalDepth - 1);
-    _closeTopModal();
-    if (_hasOpenModal()) { _modalDepth++; history.pushState({ modal:true, depth:_modalDepth }, ''); }
-    else { _modalDepth = 0; history.replaceState({ modal:false, depth:0 }, ''); }
-  }
-});
-function _initHistory() { _modalDepth = 0; history.replaceState({ modal:false, depth:0 }, ''); }
+    content.addEventListener('touchend', e => {
+        if (!pulling || isRefreshing) { pulling = false; return; }
+        pulling = false;
+        const currentH = parseInt(indicator.style.height || '0');
 
-// ── 전역 이벤트 위임 ──────────────────────────────────────────────────────────
-document.addEventListener('click', e => {
-  const el = e.target.closest('.stat-trigger');
-  if (!el) return;
-  e.stopPropagation();
-  const cn = el.getAttribute('data-cn');
-  if (cn) openStatModal(cn);
-});
+        if (currentH >= THRESHOLD) {
+            // 새로고침 발동
+            isRefreshing = true;
+            indicator.style.height = '52px';
+            indicator.classList.remove('releasing');
+            indicator.classList.add('refreshing', 'visible');
+            pullText.textContent = '새로고침 중…';
 
-document.addEventListener('dblclick', e => {
-  const el = e.target;
-  if (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA') el.select();
-});
-(() => {
-  let _lastTap = 0, _lastEl = null;
-  document.addEventListener('touchend', e => {
-    const el  = e.target;
-    if (el.tagName !== 'INPUT' && el.tagName !== 'TEXTAREA') return;
-    const now = Date.now();
-    if (_lastEl === el && now - _lastTap < 400) {
-      e.preventDefault(); el.select(); _lastTap = 0; _lastEl = null;
-    } else { _lastTap = now; _lastEl = el; }
-  }, { passive: false });
-})();
+            // 실제 새로고침 실행
+            setTimeout(() => {
+                try {
+                    _fullRender();
+                    // Firebase 연결 중이면 서버 최신 데이터 받아서 반영
+                    if (isConnected && workspaceRef) {
+                        workspaceRef.get().then(async snap => {
+                            const d = snap.val();
+                            if (!d) return;
+                            if (d.clients)    { clients    = toArray(d.clients).map(_normClientFromFb); }
+                            if (d.orders)     { orders     = toArray(d.orders).map(_normOrderFromFb); }
+                            if (d.prices)     { prices     = d.prices; }
+                            if (d.stockItems) { stockItems = toArray(d.stockItems).map(normStock); }
+                            lastHash = { clients:dataHash(clients), orders:dataHash(orders), prices:dataHash(prices), stock:dataHash(stockItems) };
+                            saveToLocal();
+                            _fullRender();
+                        }).catch(()=>{});
+                    }
+                } catch(e) { console.warn('pull-to-refresh 오류', e); }
 
-// ── INIT ──────────────────────────────────────────────────────────────────────
-function _showFatalError(msg) {
-  hideSplash();
-  const safeMsg = String(msg).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  const appEl = document.getElementById('app');
-  if (appEl) appEl.innerHTML = `
-    <div style="padding:40px 24px;text-align:center;color:#dc2626;">
-      <div style="font-size:32px;margin-bottom:12px;">⚠️</div>
-      <div style="font-weight:700;margin-bottom:8px;">앱 오류</div>
-      <div style="font-size:12px;color:#64748b;word-break:break-all;">${safeMsg}</div>
-      <button onclick="location.reload()" style="margin-top:20px;padding:10px 24px;background:#d97706;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;">새로고침</button>
-    </div>`;
+                // 인디케이터 숨기기
+                setTimeout(() => {
+                    indicator.style.height = '0';
+                    indicator.classList.remove('refreshing', 'visible', 'releasing');
+                    pullText.textContent = '당겨서 새로고침';
+                    isRefreshing = false;
+                }, 600);
+            }, 300);
+        } else {
+            // 미달 → 원위치
+            indicator.style.transition = 'height 0.25s ease';
+            indicator.style.height = '0';
+            indicator.classList.remove('releasing', 'visible');
+            setTimeout(() => { indicator.style.transition = ''; }, 250);
+        }
+    }, { passive: true });
 }
 
-window.onerror = function (msg, src, line, col, err) {
-  console.error('[onerror]', msg, src, line);
-  _showFatalError(msg);
-  return false;
-};
+// ─── 변경 이력 접기/펼치기 ───
 
-(async () => {
-  try {
-    // PIN이 설정되어 있으면 앱 시작 시 무조건 잠금
-    if (hasDashPin()) S.dashLocked = true;
-    await loadData();
-    _initHistory();
-    setTimeout(updateSyncBadge, 1000);
-  } catch (e) {
-    console.error('[INIT] loadData 오류:', e);
-    _showFatalError(e?.message || String(e));
-  }
+function toggleOldChangelog() {
+    const items = document.getElementById('oldChangelogItems');
+    const icon  = document.getElementById('changelogToggleIcon');
+    const label = document.getElementById('changelogToggleLabel');
+    const isOpen = items.style.display === 'flex';
+    // 첫 번째 이전 이력 버전명을 DOM에서 동적으로 읽어 레이블 구성
+    const firstOldVer = items.querySelector('.changelog-ver')?.textContent?.trim() || '';
+    const lastOldVer  = [...items.querySelectorAll('.changelog-ver')].pop()?.textContent?.trim() || '';
+    const rangeLabel  = firstOldVer && lastOldVer ? `(${firstOldVer} ~ ${lastOldVer})` : '';
+    if (isOpen) {
+        items.style.display = 'none';
+        icon.textContent  = '▼';
+        label.textContent = `이전 이력 보기 ${rangeLabel}`;
+    } else {
+        items.style.display = 'flex';
+        icon.textContent  = '▲';
+        label.textContent = `이전 이력 접기 ${rangeLabel}`;
+    }
+}
+
+// ─── 전체 렌더 ───
+
+function _fullRender() {
+    invalidateOrdersCache();
+    // 캐시 사전 빌드 (첫 입력 시 딜레이 제거)
+    _buildRecentPricesCache();
+    // 모든 탭 더티 마킹 → 탭 진입 시 각자 렌더링
+    _markDirty();
+    // 거래처 목록 display 상태 보장
+    const cl = document.getElementById('clientList');
+    const tb = document.getElementById('clientToggleBtn');
+    if (cl) cl.style.display = clientListVisible ? 'block' : 'none';
+    if (tb) tb.textContent   = clientListVisible ? '숨기기' : '보이기';
+    // 납품 autocomplete 갱신 (탭 무관)
+    updateItemDatalist('');
+    // 탭 무관 항상 갱신 (원본 동작 보존)
+    updateInfoCounts();
+    renderDashboard();
+    // 배지 갱신
+    updateNavBadges();
+    // 현재 활성 탭만 즉시 렌더링 (dashboard는 이미 위에서 갱신됐으므로 dirty 해제)
+    _dirty['dashboard'] = false;
+    _renderActiveIfDirty();
+}
+
+// ─── 드롭다운 외부 클릭 닫기: 위 통합 document click 핸들러에서 처리 ───
+
+// ─── 더블탭 전체선택 (모바일 터치 지원) ───
+// PC: ondblclick="this.select()" 으로 처리
+// 모바일: 300ms 이내 두 번 터치 → select() 전체 선택
+function _initDoubleTapSelect(el) {
+    if (!el) return;
+    let _lastTap = 0;
+    el.addEventListener('touchend', e => {
+        const now = Date.now();
+        if (now - _lastTap < 300) {
+            e.preventDefault();
+            el.select();
+        }
+        _lastTap = now;
+    }, { passive: false });
+}
+
+// ─── Escape 키로 열린 모달 닫기 ───
+document.addEventListener('keydown', e => {
+    if (e.key !== 'Escape') return;
+    const mp = document.getElementById('memoPopup');
+    if (mp && mp.classList.contains('open')) { closeMemoPopup(); return; }
+    const qp = document.getElementById('quickPayPopup');
+    if (qp && qp.classList.contains('open')) { closeQuickPay(); return; }
+    const bp = document.getElementById('bulkPayPopup');
+    if (bp && bp.classList.contains('open')) { closeBulkPayPopup(); return; }
+    const modals = [
+        'firebaseModal','detailModal','statementModal','partialPayModal','payEditModal',
+        'clientEditModal','orderEditModal','stockEditModal','stockAdjModal','stockLogModal'
+    ];
+    for (const id of modals) {
+        const el = document.getElementById(id);
+        if (el && el.classList.contains('open')) { closeModal(id); break; }
+    }
+});
+
+// ─── Enter 키 포커스 체인 ───
+
+function focusNext(nextId, action) {
+    if (action) { action(); return; }
+    const el = document.getElementById(nextId);
+    if (el) el.focus();
+}
+
+function bindEnter(id, nextId, action) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('keydown', e => {
+        if (e.key !== 'Enter') return;
+        // textarea: Enter는 줄바꿈, Ctrl+Enter로 다음 이동
+        if (el.tagName === 'TEXTAREA') {
+            if (e.ctrlKey || e.metaKey) { e.preventDefault(); focusNext(nextId, action); }
+            return;
+        }
+        e.preventDefault();
+        focusNext(nextId, action);
+    });
+}
+
+function initKeyHandlers() {
+    // ── 거래처 탭 ──
+    bindEnter('clientName',    'clientPhone');
+    bindEnter('clientPhone',   'clientAddress');
+    bindEnter('clientAddress', 'clientNote');
+    bindEnter('clientNote',    null, saveClient);   // Ctrl+Enter → 등록
+
+    // ── 납품 탭 ──
+    bindEnter('deliveryClient', 'deliveryDate');
+    bindEnter('deliveryDate',   'itemName');
+    bindEnter('itemName',       'itemQty');
+    bindEnter('itemQty',        'itemPrice');
+    bindEnter('itemPrice',      null, addItemToGroup);
+
+    // ── Firebase 모달 ──
+    bindEnter('workspaceId', null, () => connectWorkspace(false));
+
+    // ── 백업 탭 ──
+    bindEnter('schedDay1', 'schedDay2');
+    bindEnter('schedDay2', null, saveBackupSchedule);
+}
+
+// ─── 달걀 품목 초기 등록 ───
+
+// ─── 초기화 ───
+window.addEventListener('DOMContentLoaded', () => {
+    // 테마
+    applyTheme();
+    // 날짜 기본값
+    const today = todayKST();
+    document.getElementById('deliveryDate').value = today;
+    document.getElementById('settlementMonth').value = today.slice(0,7);
+    document.getElementById('settlementDateDaily').value = today;
+    document.getElementById('settlementYear').value = today.slice(0,4);
+    initHistPeriod();
+    // 탭 & 스와이프
+    initTabs();
+    _initAllMoneyInputs(); // 금액 입력 필드 콤마 포매터 초기화
+    initSwipeGestures();
+    initPullToRefresh();
+    initKeyHandlers();
+    // 검색 입력창 더블탭 전체선택 (모바일)
+    // 검색 input별 결과 목록 ID 매핑
+    const searchScrollMap = {
+        'clientSearch':   'clientList',
+        'deliveryClient': 'clientDropdown',
+        'histSearch':     'orderList',
+        'settleSearch':   'settlementTable',
+    };
+    ['deliveryClient','clientSearch','histSearch','settleSearch'].forEach(id => {
+        _initDoubleTapSelect(document.getElementById(id));
+        // 모바일: Enter(이동) 키 입력 시 키보드 닫기 + 결과 목록으로 스크롤
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener('keydown', e => {
+                if (e.key === 'Enter' || e.keyCode === 13) {
+                    e.preventDefault();
+                    el.blur(); // 키보드 닫기
+                    // 키보드가 닫히고 나서 스크롤 (300ms 대기)
+                    setTimeout(() => {
+                        const targetId = searchScrollMap[id];
+                        const target = targetId ? document.getElementById(targetId) : null;
+                        // 거래처 목록이 숨겨져 있으면 자동 펼치기
+                        if (id === 'clientSearch' && !clientListVisible) {
+                            clientListVisible = true;
+                            if (target) target.style.display = 'block';
+                            const tb = document.getElementById('clientToggleBtn');
+                            if (tb) tb.textContent = '숨기기';
+                            renderClients();
+                        }
+                        // 정산 목록이 숨겨져 있으면 자동 펼치기
+                        if (id === 'settleSearch' && !settleListVisible) {
+                            settleListVisible = true;
+                            if (target) target.style.display = 'block';
+                            const sb = document.getElementById('settleToggleBtn');
+                            if (sb) sb.textContent = '숨기기';
+                        }
+                        if (target) {
+                            target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        }
+                    }, 300);
+                }
+            });
+        }
+    });
+    // 거래처 목록 초기 display 상태 동기화 (clientListVisible 기본값 false에 맞춤)
+    const clInit = document.getElementById('clientList');
+    const tbInit = document.getElementById('clientToggleBtn');
+    if (clInit) clInit.style.display = clientListVisible ? 'block' : 'none';
+    if (tbInit) tbInit.textContent = clientListVisible ? '숨기기' : '보이기';
+    // 초기 렌더
+    renderDashboard();
+    updateInfoCounts();
+    updateItemDatalist();
+    // 워크스페이스 ID 복원 및 잠금 UI 적용
+    const savedWs  = localStorage.getItem('workspaceId');
+    const isLocked = localStorage.getItem('wsLocked') === '1';
+    // 잠금 상태면 input 값을 localStorage에서 복원 (applyWsLockUI 내부에서도 처리하지만 안전망)
+    if (savedWs) {
+        document.getElementById('workspaceId').value = savedWs;
+    }
+    applyWsLockUI(); // 잠금 여부와 무관하게 항상 UI 동기화
+    // 자동 재연결: workspaceId가 저장돼 있으면 연결 시도
+    if (savedWs) {
+        waitFirebase(() => {
+            _doConnect(savedWs, true);
+            // 공유 워크스페이스 거래처 캐시 로드
+            _loadSharedClientsFromWs();
+            // 내 sharedClients를 Firebase에 즉시 반영 (앱 시작 시 동기화)
+            // ※ null 대신 [] 사용 — null 저장 시 Firebase 노드 삭제로 공유 목록이 초기화되는 버그 방지
+            const myShared = _getMySharedClients();
+            firebase.database().ref(`workspaces/${savedWs}/sharedClients`)
+                .set(myShared.length ? myShared : []).catch(() => {});
+        });
+    }
+    // 자동 백업 체크
+    setTimeout(checkAutoBackup, 2000);
+    // 백업 저장 위치 복원
+    loadBackupDir();
+    // 네트워크 끊김/복구 감지
+    // ※ .info/connected 리스너가 Firebase 소켓 수준 감지를 담당
+    //   window.online/offline은 .info/connected가 미동작하는 엣지 케이스 보완용으로 유지
+    window.addEventListener('online', () => {
+        const sid = localStorage.getItem('workspaceId');
+        if (workspaceRef) {
+            // ── 서버 먼저 읽기 → 시간 비교 → 로컬이 더 최신일 때만 업로드 ──
+            // (기존: 무조건 업로드 후 서버 재로드 → 멀티기기 경쟁 조건 발생)
+            debouncedSync.cancel();
+            workspaceRef.get().then(async snap => {
+                const d = snap.val();
+                isConnected = true;
+                setSyncStatus('online');
+                if (!d) {
+                    // 서버 비어있음 → 로컬 업로드
+                    const ch=dataHash(clients),oh=dataHash(orders),ph=dataHash(prices),sh=dataHash(stockItems);
+                    const ordersMap = {}; orders.forEach(o => { ordersMap[o.id] = _minifyOrder(o); });
+                    workspaceRef.update({
+                        clients: clients.map(_minifyClient),
+                        orders: ordersMap, prices, stockItems,
+                        lastUpdated: new Date().toISOString(), writtenBy: SESSION_ID
+                    }).then(() => {
+                        lastHash.clients=ch; lastHash.orders=oh; lastHash.prices=ph; lastHash.stock=sh;
+                        _clearOrderDelta();
+                    }).catch(() => {});
+                    return;
+                }
+                // 서버·로컬 시간 비교
+                const serverTime = d.lastUpdated ? new Date(d.lastUpdated).getTime() : 0;
+                const lastLocalUpdated = localStorage.getItem('lastLocalUpdated');
+                const localTime = Math.max(
+                    _localWriteTime,
+                    lastLocalUpdated ? new Date(lastLocalUpdated).getTime() : 0
+                );
+                if (localTime > serverTime) {
+                    // 로컬이 더 최신 → minify 적용 후 업로드
+                    const ch=dataHash(clients),oh=dataHash(orders),ph=dataHash(prices),sh=dataHash(stockItems);
+                    const ordersMap = {}; orders.forEach(o => { ordersMap[o.id] = _minifyOrder(o); });
+                    workspaceRef.update({
+                        clients: clients.map(_minifyClient),
+                        orders: ordersMap, prices, stockItems,
+                        lastUpdated: new Date().toISOString(), writtenBy: SESSION_ID
+                    }).then(() => {
+                        lastHash.clients=ch; lastHash.orders=oh; lastHash.prices=ph; lastHash.stock=sh;
+                        _clearOrderDelta();
+                    }).catch(() => {});
+                } else {
+                    // 서버가 더 최신 (오프라인 중 다른 기기가 변경) → 서버 데이터 적용
+                    if (d.clients)    clients    = toArray(d.clients).map(_normClientFromFb);
+                    if (d.orders)     orders     = toArray(d.orders).map(_normOrderFromFb);
+                    if (d.prices)     prices     = d.prices;
+                    if (d.stockItems) stockItems = toArray(d.stockItems).map(normStock);
+                    lastHash.clients=dataHash(clients); lastHash.orders=dataHash(orders);
+                    lastHash.prices=dataHash(prices);   lastHash.stock=dataHash(stockItems);
+                    _clearOrderDelta();
+                    invalidateOrdersCache();
+                    saveToLocal();
+                    _fullRender();
+                }
+            }).catch(() => {
+                // .get() 실패 시 .info/connected가 재연결 후 debouncedSync() 트리거
+            });
+        } else {
+            if (sid) {
+                document.getElementById('workspaceId').value = sid;
+                waitFirebase(() => _doConnect(sid, true));
+            }
+        }
+    });
+    window.addEventListener('offline', () => {
+        // .info/connected 리스너가 주 처리 담당 — 여기서는 즉각 UI 반영만
+        if (isConnected) {
+            isConnected = false;
+            debouncedSync.cancel();
+            setSyncStatus('error');
+        }
+    });
+    applyAutoDeductUI();
+    // 재고 탭 날짜 인풋 초기값 설정
+    const sdInit = document.getElementById('stockViewDate');
+    if (sdInit) sdInit.value = todayKST();
+    initSystemTheme();
+    updateNavBadges();
+
+    // ─── PWA 설치 프롬프트 ───
+    let _pwaInstallPrompt = null;
+    window.addEventListener('beforeinstallprompt', e => {
+        e.preventDefault();
+        _pwaInstallPrompt = e;
+        // 설치 안내 배너 표시
+        const banner = document.createElement('div');
+        banner.id = 'pwaBanner';
+        banner.style.cssText = 'position:fixed;bottom:80px;left:50%;transform:translateX(-50%);' +
+            'width:calc(100% - 32px);max-width:488px;' +
+            'background:linear-gradient(135deg,#4e54c8,#6c63ff);color:#fff;' +
+            'border-radius:14px;padding:13px 16px;display:flex;align-items:center;' +
+            'justify-content:space-between;gap:10px;z-index:9999;' +
+            'box-shadow:0 4px 20px rgba(108,99,255,.5);font-size:13px;font-weight:700;';
+        banner.innerHTML =
+            '<span>📲 홈화면에 앱으로 추가할 수 있습니다</span>' +
+            '<div style="display:flex;gap:8px;flex-shrink:0;">' +
+            '<button onclick="installPWA()" style="background:#fff;color:#6c63ff;border:none;border-radius:8px;padding:7px 14px;font-weight:900;font-size:12px;cursor:pointer;">설치</button>' +
+            '<button onclick="document.getElementById(\'pwaBanner\').remove()" style="background:rgba(255,255,255,.2);color:#fff;border:none;border-radius:8px;padding:7px 10px;font-size:12px;cursor:pointer;">✕</button>' +
+            '</div>';
+        document.body.appendChild(banner);
+        // 10초 후 자동 숨김
+        setTimeout(() => banner?.remove(), 10000);
+    });
+
+    window.installPWA = async function() {
+        if (!_pwaInstallPrompt) return;
+        _pwaInstallPrompt.prompt();
+        const { outcome } = await _pwaInstallPrompt.userChoice;
+        _pwaInstallPrompt = null;
+        document.getElementById('pwaBanner')?.remove();
+        if (outcome === 'accepted') toast('✅ 홈화면에 추가되었습니다!', 'var(--green)');
+    };
+
+    // 이미 설치된 경우 (standalone 모드)
+    if (window.matchMedia('(display-mode: standalone)').matches) {
+        console.log('PWA 모드로 실행 중');
+    }
+});
+
+// ═══════════════════════════════════════
+// ── 메모 모아보기 ─────────────────────────────────────────────
+// ═══════════════════════════════════════
+let _memoViewUnit   = 'cycle'; // 'cycle' | 'week' | 'month'
+let _memoViewOffset = 0;       // 오늘 기준 n주/월 전후
+let _memoDetailClient = '';    // 상세 팝업에 표시 중인 거래처명
+
+function openMemoView() {
+    _memoViewOffset = 0;
+    document.getElementById('memoViewPopup').classList.add('open');
+    if (!_modalHistoryPushed) { history.pushState({ modalOpen: true }, ''); _modalHistoryPushed = true; }
+    renderMemoView();
+}
+function closeMemoView() {
+    document.getElementById('memoViewPopup').classList.remove('open');
+}
+
+function setMemoUnit(unit, btn) {
+    _memoViewUnit   = unit;
+    _memoViewOffset = 0;
+    document.querySelectorAll('.memo-unit-tab').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    renderMemoView();
+}
+
+function moveMemoViewPeriod(dir) {
+    _memoViewOffset += dir;
+    renderMemoView();
+}
+
+function _getMemoViewRange() {
+    const fmt = d => {
+        const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), dd = String(d.getDate()).padStart(2,'0');
+        return `${y}-${m}-${dd}`;
+    };
+    const addDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
+    // todayKST()로 정확한 KST 날짜 구함 (기기 시간대 무관)
+    const todayStr = todayKST();
+    const today = new Date(todayStr + 'T00:00:00');
+
+    if (_memoViewUnit === 'month') {
+        const d    = new Date(today.getFullYear(), today.getMonth() + _memoViewOffset, 1);
+        const endD = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+        const pad  = n => String(n).padStart(2,'0');
+        const start = `${d.getFullYear()}-${pad(d.getMonth()+1)}-01`;
+        const end   = `${endD.getFullYear()}-${pad(endD.getMonth()+1)}-${pad(endD.getDate())}`;
+        const label = `${d.getFullYear()}년 ${d.getMonth()+1}월`;
+        return { start, end, label };
+
+    } else if (_memoViewUnit === 'cycle') {
+        // 납품 주기: 오늘(+offset일) 기준 두 날짜 반환
+        // 월/화/수 → D-7, D-4 / 목/금/토 → D-7, D-3
+        const base = addDays(today, _memoViewOffset);
+        const dow  = base.getDay(); // 0=일,1=월...6=토
+        const gap  = (dow >= 4 && dow <= 6) ? 3 : 4; // 목·금·토=3, 나머지=4
+        const d1   = addDays(base, -7);
+        const d2   = addDays(base, -gap);
+        const dayNames = ['일','월','화','수','목','금','토'];
+        const shortFmt = d => `${d.getMonth()+1}/${d.getDate()}(${dayNames[d.getDay()]})`;
+        const label = `${shortFmt(d1)}, ${shortFmt(d2)} 메모`;
+        return { dates: [fmt(d1), fmt(d2)], label, base: fmt(base) };
+
+    } else {
+        // 주단위: 월요일 기준
+        const day    = today.getDay();
+        const monday = new Date(today);
+        monday.setDate(today.getDate() - (day === 0 ? 6 : day - 1) + _memoViewOffset * 7);
+        const sunday = new Date(monday);
+        sunday.setDate(monday.getDate() + 6);
+        const label = `${monday.getMonth()+1}/${monday.getDate()}(월) ~ ${sunday.getMonth()+1}/${sunday.getDate()}(일)`;
+        return { start: fmt(monday), end: fmt(sunday), label };
+    }
+}
+
+async function deleteAllMemoInView() {
+    const range = _getMemoViewRange();
+    const targets = (orders || []).filter(o => {
+        if (!o.note || !o.note.trim()) return false;
+        if (range.dates) return range.dates.includes(o.date);
+        return o.date >= range.start && o.date <= range.end;
+    });
+    if (!targets.length) return toast('삭제할 메모가 없습니다', 'var(--text3)');
+    const clientNames = [...new Set(targets.map(o => o.clientName))].join(', ');
+    if (!await customConfirm(`📋 현재 기간의 메모 ${targets.length}건을 모두 삭제할까요?\n\n대상: ${clientNames}`)) return;
+    const now = new Date().toISOString();
+    targets.forEach(o => { o.note = ''; o.updatedAt = now; });
+    _saveAndFlush();
+    renderMemoView();
+    renderOrders();
+    toast(`🗑️ 메모 ${targets.length}건 삭제됨`, 'var(--text3)');
+}
+
+function renderMemoView() {
+    const range = _getMemoViewRange();
+    document.getElementById('memoViewPeriodLabel').textContent = range.label;
+
+    // cycle 모드: 두 날짜 / 그 외: start~end 범위
+    const filtered = (orders || []).filter(o => {
+        if (!o.note || !o.note.trim()) return false;
+        if (range.dates) return range.dates.includes(o.date);
+        return o.date >= range.start && o.date <= range.end;
+    });
+
+    const groups = {};
+    filtered.forEach(o => {
+        if (!groups[o.clientName]) groups[o.clientName] = [];
+        groups[o.clientName].push(o);
+    });
+
+    const list = document.getElementById('memoViewClientList');
+    if (!Object.keys(groups).length) {
+        list.innerHTML = `<div style="text-align:center;padding:36px 0;color:var(--text3);font-size:14px;">📭 이 기간에 메모가 없습니다</div>`;
+        return;
+    }
+
+    list.innerHTML = Object.entries(groups)
+        .sort((a, b) => a[0].localeCompare(b[0], 'ko'))
+        .map(([name, ords]) => {
+            const cnt     = ords.length;
+            const preview = ords[0].note.length > 24 ? ords[0].note.slice(0, 24) + '…' : ords[0].note;
+            const safeName = escapeHtml(name);
+            return `<div class="memo-view-client-card" onclick="openMemoDetail('${safeName}')">
+                <div class="memo-view-client-name">${safeName} <span class="memo-count-badge">${cnt}건</span></div>
+                <div class="memo-view-preview">${escapeHtml(preview)}</div>
+            </div>`;
+        }).join('');
+}
+
+function openMemoDetail(clientName) {
+    const range = _getMemoViewRange();
+    _memoDetailClient = clientName;
+
+    const ords = (orders || [])
+        .filter(o => {
+            if (o.clientName !== clientName || !o.note || !o.note.trim()) return false;
+            if (range.dates) return range.dates.includes(o.date);
+            return o.date >= range.start && o.date <= range.end;
+        })
+        .sort((a, b) => (b.date||"").localeCompare(a.date||""));
+
+    document.getElementById('memoDetailTitle').textContent = `📋 ${clientName}`;
+    document.getElementById('memoDetailPeriodLabel').textContent = range.label;
+
+    document.getElementById('memoDetailList').innerHTML = ords.length
+        ? ords.map(o => {
+            const paidBadge = o.isPaid ? '✅ 완납' : '🔴 미수';
+            const amount    = o.total ? `${o.total.toLocaleString()}원 · ${paidBadge}` : '';
+            return `<div class="memo-detail-item" id="mdi-${o.id}">
+                <div class="memo-detail-header">
+                    <div class="memo-detail-date">📅 ${o.date}</div>
+                    <button class="memo-delete-btn" onclick="deleteMemoById('${o.id}')" title="메모 삭제">🗑️</button>
+                </div>
+                <div class="memo-detail-text">${escapeHtml(o.note)}</div>
+                ${amount ? `<div class="memo-detail-amount">${amount}</div>` : ''}
+            </div>`;
+        }).join('')
+        : `<div style="text-align:center;padding:36px 0;color:var(--text3);font-size:14px;">📭 메모가 없습니다</div>`;
+
+    document.getElementById('memoDetailPopup').classList.add('open');
+    if (!_modalHistoryPushed) { history.pushState({ modalOpen: true }, ''); _modalHistoryPushed = true; }
+}
+
+async function deletePrevMemo(orderId) {
+    const o = orders.find(x => x.id === orderId);
+    if (!o || !o.note) return;
+    if (!await customConfirm(`📅 ${o.date} 이전 메모를 삭제할까요?\n\n"${o.note}"`)) return;
+    o.note = '';
+    o.updatedAt = new Date().toISOString();
+    _markDirtyOrder(o.id);
+    _saveAndFlush();
+    renderOrders();
+    toast('🗑️ 이전 메모 삭제됨', 'var(--text3)');
+}
+
+async function deleteMemoById(orderId) {
+    const o = orders.find(x => x.id === orderId);
+    if (!o) return;
+    if (!await customConfirm(`📅 ${o.date} 메모를 삭제할까요?\n\n"${o.note}"`)) return;
+
+    o.note = '';
+    o.updatedAt = new Date().toISOString();
+    _markDirtyOrder(o.id);
+    _saveAndFlush();
+    toast('🗑️ 메모 삭제됨', 'var(--text3)');
+
+    // 현재 항목 제거 (애니메이션)
+    const el = document.getElementById(`mdi-${orderId}`);
+    if (el) {
+        el.style.transition = 'opacity .25s, max-height .3s';
+        el.style.opacity = '0';
+        el.style.overflow = 'hidden';
+        el.style.maxHeight = el.offsetHeight + 'px';
+        setTimeout(() => { el.style.maxHeight = '0'; el.style.marginBottom = '0'; }, 10);
+        setTimeout(() => {
+            el.remove();
+            // 남은 항목 없으면 목록 탭에도 반영
+            const list = document.getElementById('memoDetailList');
+            if (!list.querySelector('.memo-detail-item')) {
+                list.innerHTML = `<div style="text-align:center;padding:36px 0;color:var(--text3);font-size:14px;">📭 메모가 없습니다</div>`;
+                // 메모 목록 뷰도 갱신
+                renderMemoView();
+            }
+        }, 320);
+    }
+
+    // 납품 내역 카드 메모 버튼도 갱신
+    renderOrders();
+}
+
+function closeMemoDetail() {
+    document.getElementById('memoDetailPopup').classList.remove('open');
+}
+
+// 메모 팝업
+// ═══════════════════════════════════════
+let _memoTargetId = null;
+
+function openMemoPopup(orderId) {
+    const foundMemo = _findOrderAnywhere(orderId);
+    if (!foundMemo) return;
+    const o = foundMemo.order;
+    _memoTargetId = orderId;
+    document.getElementById('memoPopupClient').textContent = o.clientName || '';
+    document.getElementById('memoTextarea').value = o.note || '';
+    document.getElementById('memoPopup').classList.add('open');
+    setTimeout(() => document.getElementById('memoTextarea').focus(), 120);
+}
+function closeMemoPopup() {
+    document.getElementById('memoPopup').classList.remove('open');
+    _memoTargetId = null;
+}
+async function saveMemoPopup() {
+    if (!_memoTargetId) return;
+    const foundMemoSave = _findOrderAnywhere(_memoTargetId);
+    if (!foundMemoSave) return;
+    const o = foundMemoSave.order;
+    const text = document.getElementById('memoTextarea').value.trim();
+    if (foundMemoSave.isShared) {
+        const ok = await _patchSharedOrder(foundMemoSave.sharedWsId, _memoTargetId, { note: text });
+        if (ok) {
+            closeMemoPopup();
+            renderOrders();
+            toast(text ? '📝 메모 저장됨' : '🗑️ 메모 삭제됨', 'var(--accent)');
+        }
+    } else {
+        o.note = text;
+        o.updatedAt = new Date().toISOString();
+        _markDirtyOrder(o.id);
+        _saveAndFlush();
+        closeMemoPopup();
+        renderOrders();
+        renderDashboard();
+        updateInfoCounts();
+        updateNavBadges();
+        _refreshUnpaidIfActive();
+        toast(text ? '📝 메모 저장됨' : '🗑️ 메모 삭제됨', 'var(--accent)');
+    }
+}
+
+// ═══ 거래처 카드 툴팁 토글 ═══
+function toggleClientTooltip(e, card) {
+    // 버튼(수정/삭제/전화/납품) 클릭 시 툴팁 무시
+    if (e.target.closest('button,a')) return;
+    const tooltip = card.querySelector('.client-tooltip');
+    if (!tooltip) return;
+    // 다른 열린 툴팁 먼저 닫기
+    document.querySelectorAll('.client-card.show-tooltip').forEach(el => {
+        if (el !== card) el.classList.remove('show-tooltip');
+    });
+    card.classList.toggle('show-tooltip');
+    e.stopPropagation();
+}
+// 외부 클릭 시 툴팁 닫기
+
+// ─── 핀치줌 / 더블탭 줌 완전 차단 ───
+// (Android Chrome은 viewport user-scalable=no를 무시하므로 JS로 강제 차단)
+// ※ 더블탭 줌은 CSS touch-action:manipulation으로 처리 (touchend preventDefault는 버튼 클릭을 막으므로 제거)
+(function preventZoom() {
+    // 핀치줌 차단 (멀티터치)
+    document.addEventListener('touchstart', e => {
+        if (e.touches.length > 1) e.preventDefault();
+    }, { passive: false });
+
+    // gesturestart 차단 (iOS Safari 핀치줌)
+    document.addEventListener('gesturestart', e => e.preventDefault(), { passive: false });
+
+    // Ctrl+휠 줌 차단 (데스크탑/키보드 연결 시)
+    document.addEventListener('wheel', e => {
+        if (e.ctrlKey) e.preventDefault();
+    }, { passive: false });
 })();
+
+// ─── 정산 테이블 헤더 고정 스크롤 감지 ───
+// 첫 번째 데이터 행이 화면 상단에 닿으면 thead sticky 활성화
+// 위로 스크롤해서 테이블 위 영역이 보이면 sticky 해제 → 검색창 접근 가능
+(function initSettleTablePin() {
+    const mainContent = document.getElementById('mainContent');
+    if (!mainContent) return;
+    mainContent.addEventListener('scroll', () => {
+        const st = document.getElementById('settlementTable');
+        if (!st || st.style.display === 'none') return;
+        const wrap = st.querySelector('.settle-table-wrap');
+        const tbody = st.querySelector('tbody');
+        const firstRow = tbody ? tbody.querySelector('tr') : null;
+        if (!wrap || !firstRow) { st.classList.remove('thead-pinned'); return; }
+        // 첫 번째 데이터 행의 상단이 화면 상단(0)보다 위로 올라가면 헤더 고정
+        const firstRowTop = firstRow.getBoundingClientRect().top;
+        if (firstRowTop <= 0) {
+            st.classList.add('thead-pinned');
+        } else {
+            st.classList.remove('thead-pinned');
+        }
+    }, { passive: true });
+})();
+// 자주 껐다 켜는 환경에서 debounce 대기 중 종료로 인한 데이터 유실 방지
+function _flushSync() {
+    if (!workspaceRef || !isConnected) return;
+    const ch = dataHash(clients);
+    const oh = dataHash(orders);
+    const ph = dataHash(prices);
+    const sh = dataHash(stockItems);
+    let changed = false;
+    const updates = {};
+    if (ch !== lastHash.clients) { updates.clients    = clients.map(_minifyClient); changed = true; }
+    if (oh !== lastHash.orders)  {
+        // flushSync는 항상 full map (비상 저장 — delta 미사용)
+        const ordersMap = {};
+        orders.forEach(o => { ordersMap[o.id] = _minifyOrder(o); });
+        updates.orders = ordersMap;
+        _clearOrderDelta();
+        changed = true;
+    }
+    if (ph !== lastHash.prices)  { updates.prices     = prices;     changed = true; }
+    if (sh !== lastHash.stock)   { updates.stockItems = _getLightStock(); changed = true; }
+    if (!changed) return;
+    updates.lastUpdated = new Date().toISOString();
+    updates.writtenBy   = SESSION_ID;
+    if (updates.clients)    lastHash.clients = ch;
+    if (updates.orders)     lastHash.orders  = oh;
+    if (updates.prices)     lastHash.prices  = ph;
+    if (updates.stockItems) lastHash.stock   = sh;
+    debouncedSync.cancel(); // 대기 중인 debounce 취소 (중복 방지)
+    workspaceRef.update(updates).then(() => {
+        localStorage.setItem('lastLocalUpdated', updates.lastUpdated);
+    }).catch(() => {
+        // 롤백 — 다음 실행 시 재시도
+        if (updates.clients)    lastHash.clients = '';
+        if (updates.orders)     lastHash.orders  = '';
+        if (updates.prices)     lastHash.prices  = '';
+        if (updates.stockItems) lastHash.stock   = '';
+    });
+}
+
+// 화면 꺼짐 / 다른 앱으로 전환 시
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'hidden') {
+        _flushSync();
+    } else {
+        // 탭 복귀 시: 실시간 리스너가 살아 있으면 자동 갱신됨 (별도 작업 불필요)
+        // 리스너가 없는 경우(오프라인 복귀, 첫 연결 전 등)에만 수동 갱신
+        try {
+            const listeners = typeof _sharedOrdersListeners !== 'undefined'
+                ? _sharedOrdersListeners : {};
+            if (isConnected && Object.keys(listeners).length === 0
+                && typeof _getSharedWs === 'function' && _getSharedWs().length > 0) {
+                _loadSharedClientsFromWs().catch(() => {});
+            }
+        } catch(e) { /* 초기화 전 호출 무시 */ }
+    }
+});
+
+// 브라우저 탭 닫기 / PWA 종료 시
+window.addEventListener('pagehide', _flushSync);

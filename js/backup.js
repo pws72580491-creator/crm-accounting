@@ -1,393 +1,315 @@
-// ── 백업 헬퍼 ─────────────────────────────────────────────────────────────────
-function _getBackups()         { return lsGet(BACKUP_LS_KEY, []); }
-function _saveBackupsLocal(arr){ lsSet(BACKUP_LS_KEY, arr); }
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  § 12  백업 & 복원                                                ║
+// ╚══════════════════════════════════════════════════════════════╝
 
-async function _fbSaveBackup(entry) {
-  if (!db) return;
-  try { await db.ref(`${BACKUP_FB_PATH}/${entry.id}`).set(entry); }
-  catch (e) { console.warn('[백업] Firebase 저장 실패:', e.message); }
-}
-async function _fbDeleteBackup(id) {
-  if (!db) return;
-  try { await db.ref(`${BACKUP_FB_PATH}/${id}`).remove(); }
-  catch (e) { console.warn('[백업] Firebase 삭제 실패:', e.message); }
-}
-async function _syncBackupsFromFb() {
-  if (!db) return;
-  try {
-    const snap = await db.ref(BACKUP_FB_PATH).get();
-    if (!snap.val()) return;
-    const arr = Object.values(snap.val()).sort((a, b) => b.id - a.id).slice(0, BACKUP_MAX);
-    _saveBackupsLocal(arr);
-    console.info(`[백업] Firebase에서 ${arr.length}개 동기화됨`);
-  } catch (e) { console.warn('[백업] Firebase 동기화 실패:', e.message); }
-}
-async function _fbPruneBackups() {
-  if (!db) return;
-  try {
-    const snap = await db.ref(BACKUP_FB_PATH).get();
-    if (!snap.val()) return;
-    const all      = Object.values(snap.val()).sort((a, b) => b.id - a.id);
-    const toDelete = all.slice(BACKUP_MAX);
-    await Promise.all(toDelete.map(b => db.ref(`${BACKUP_FB_PATH}/${b.id}`).remove()));
-  } catch (e) { console.warn('[백업] Firebase 정리 실패:', e.message); }
+// ─── 백업 & 복원 ───
+// ─── 백업 저장 위치 (File System Access API + IndexedDB) ───
+const _IDB_NAME = 'deliveryProDB';
+const _IDB_STORE = 'settings';
+
+function _idbOpen() {
+    return new Promise((resolve, reject) => {
+        const req = indexedDB.open(_IDB_NAME, 1);
+        req.onupgradeneeded = e => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains(_IDB_STORE))
+                db.createObjectStore(_IDB_STORE);
+        };
+        req.onsuccess = e => resolve(e.target.result);
+        req.onerror   = e => reject(e.target.error);
+    });
 }
 
-async function _createBackup(label) {
-  const backups = _getBackups();
-  const entry   = {
-    id:   Date.now(),
-    date: new Date().toISOString(),
-    label,
-    clients:      JSON.parse(JSON.stringify(S.clients)),
-    transactions: JSON.parse(JSON.stringify(S.transactions)),
-  };
-  const filtered = backups.filter(b => b.label !== label);
-  filtered.unshift(entry);
-  _saveBackupsLocal(filtered.slice(0, BACKUP_MAX));
-  _fbSaveBackup(entry).then(() => _fbPruneBackups()).catch(() => {});
-  return entry;
+async function _idbPut(key, value) {
+    const db = await _idbOpen();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(_IDB_STORE, 'readwrite');
+        tx.objectStore(_IDB_STORE).put(value, key);
+        tx.oncomplete = resolve; tx.onerror = e => reject(e.target.error);
+    });
+}
+
+async function _idbGet(key) {
+    const db = await _idbOpen();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(_IDB_STORE, 'readonly');
+        const req = tx.objectStore(_IDB_STORE).get(key);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror   = e => reject(e.target.error);
+    });
+}
+
+async function _idbDel(key) {
+    const db = await _idbOpen();
+    return new Promise((resolve, reject) => {
+        const tx = db.transaction(_IDB_STORE, 'readwrite');
+        tx.objectStore(_IDB_STORE).delete(key);
+        tx.oncomplete = resolve; tx.onerror = e => reject(e.target.error);
+    });
+}
+
+async function loadBackupDir() {
+    try {
+        const handle = await _idbGet('backupDirHandle');
+        if (!handle) return;
+        // 읽기 권한 확인 (조용히)
+        const perm = await handle.queryPermission({ mode: 'readwrite' });
+        backupDirHandle = handle;
+        updateBackupDirUI(handle.name, perm === 'granted');
+    } catch(e) { /* IndexedDB 미지원 또는 핸들 만료 */ }
+}
+
+async function pickBackupDir() {
+    if (!('showDirectoryPicker' in window)) {
+        toast('❗ 이 브라우저는 폴더 선택을 지원하지 않습니다 (Chrome·Edge 데스크톱 권장)');
+        return;
+    }
+    try {
+        const handle = await window.showDirectoryPicker({ mode: 'readwrite', startIn: 'downloads' });
+        backupDirHandle = handle;
+        await _idbPut('backupDirHandle', handle);
+        updateBackupDirUI(handle.name, true);
+        showBackupBanner('✅ 저장 위치 설정 완료: ' + handle.name, 'success');
+    } catch(e) {
+        if (e.name !== 'AbortError') showBackupBanner('❌ 폴더 선택 실패: ' + e.message, 'error');
+    }
+}
+
+async function clearBackupDir() {
+    backupDirHandle = null;
+    try { await _idbDel('backupDirHandle'); } catch(e) {}
+    updateBackupDirUI(null, false);
+    showBackupBanner('📂 저장 위치가 기본 다운로드 폴더로 초기화되었습니다.', 'success');
+}
+
+function updateBackupDirUI(name, granted) {
+    const info    = document.getElementById('backupDirInfo');
+    const clearBtn= document.getElementById('clearDirBtn');
+    const pickBtn = document.getElementById('pickDirBtn');
+    if (!info) return;
+    if (name) {
+        info.innerHTML = `<span style="color:var(--accent);font-weight:700;">📂 ${escapeHtml(name)}</span>`
+                       + (granted ? '' : ' <span style="color:var(--orange);font-size:11px;">(권한 재확인 필요)</span>');
+        if (clearBtn) clearBtn.style.display = 'inline-flex';
+        if (pickBtn)  pickBtn.textContent = '📁 폴더 변경';
+    } else {
+        info.innerHTML = '<span style="color:var(--text2);">📂 기본 다운로드 폴더</span>';
+        if (clearBtn) clearBtn.style.display = 'none';
+        if (pickBtn)  pickBtn.textContent = '📁 폴더 선택';
+    }
+}
+
+async function _writeToDir(handle, filename, jsonStr) {
+    // 권한 확인 → 필요 시 재요청
+    const opts = { mode: 'readwrite' };
+    if ((await handle.queryPermission(opts)) !== 'granted') {
+        const res = await handle.requestPermission(opts);
+        if (res !== 'granted') throw new Error('폴더 쓰기 권한이 거부되었습니다.');
+    }
+    // Blob을 파일 생성 전에 미리 준비
+    const blob = new Blob([jsonStr], { type: 'application/json' });
+    const fileHandle = await handle.getFileHandle(filename, { create: true });
+    let writable = null;
+    try {
+        // createWritable()도 try 안에 포함: 실패해도 0 byte 파일 cleanup 가능
+        writable = await fileHandle.createWritable();
+        await writable.write(blob);
+        await writable.close();
+        writable = null; // close 성공 표시
+        // 쓰기 검증: 실제 파일 크기 확인 (0 byte이면 실패로 처리)
+        const written = await fileHandle.getFile();
+        if (written.size === 0) throw new Error('파일이 0 byte로 저장됨 — 다운로드로 전환');
+    } catch(e) {
+        if (writable) { try { await writable.abort(); } catch(_) {} }
+        // 0 byte 파일 정리 시도 (Chrome/Edge 지원)
+        try { await fileHandle.remove(); } catch(_) {}
+        throw e; // 상위에서 다운로드 폴백 처리
+    }
+}
+
+function loadBackupSchedule() {
+    return { day1:parseInt(localStorage.getItem('backupDay1')||'1'), day2:parseInt(localStorage.getItem('backupDay2')||'15') };
+}
+
+function saveBackupSchedule() {
+    const d1=Math.min(28,Math.max(1,parseInt(document.getElementById('schedDay1').value)||1));
+    const d2=Math.min(28,Math.max(1,parseInt(document.getElementById('schedDay2').value)||15));
+    localStorage.setItem('backupDay1',d1); localStorage.setItem('backupDay2',d2);
+    document.getElementById('schedDay1').value=d1; document.getElementById('schedDay2').value=d2;
+    showBackupBanner('✅ 자동 백업 일정 저장 완료 (매월 '+d1+'일 · '+d2+'일)','success');
+}
+
+// 가져오기 전 안전 백업: 파일 다운로드 없이 클라우드에만 저장
+
+async function runBackupCloudOnly(label='가져오기전') {
+    if (!isConnected || !workspaceRef) return;
+    const { dateStr, key } = nowKST();
+    const payload= { label, backupDate:dateStr, autoTrigger:false, clients, orders, prices, stockItems,
+                     clientsCount:clients.length, ordersCount:orders.length,
+                     writtenBy: SESSION_ID };
+    await workspaceRef.child('backups').child(key).set(payload);
+    const snap=await workspaceRef.child('backups').orderByKey().once('value');
+    const keys=Object.keys(snap.val()||{}).sort();
+    if (keys.length>10) {
+        const del={}; keys.slice(0,keys.length-10).forEach(k=>del[k]=null);
+        await workspaceRef.child('backups').update(del);
+    }
+}
+
+async function runBackup(label='수동', autoTrigger=false) {
+    const { dateStr, key } = nowKST();
+    const payload= { label, backupDate:dateStr, autoTrigger, clients, orders, prices, stockItems,
+                     clientsCount:clients.length, ordersCount:orders.length,
+                     writtenBy: SESSION_ID };
+    // 파일 저장 (지정 폴더 우선 → 다운로드 폴백)
+    const filename = `backup_${label}_${key}.json`;
+    const jsonStr  = JSON.stringify(payload, null, 2);
+    let savedToDir = false;
+    if (backupDirHandle) {
+        try {
+            await _writeToDir(backupDirHandle, filename, jsonStr);
+            savedToDir = true;
+        } catch(e) {
+            console.warn('지정 폴더 저장 실패, 다운로드로 전환:', e.message);
+            updateBackupDirUI(backupDirHandle?.name, false);
+        }
+    }
+    if (!savedToDir) {
+        try {
+            const blob = new Blob([jsonStr], { type:'application/json' });
+            const url  = URL.createObjectURL(blob);
+            const a    = document.createElement('a'); a.href=url; a.download=filename;
+            document.body.appendChild(a); a.click(); document.body.removeChild(a);
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
+        } catch(e) { console.warn('파일 저장 실패(모바일 환경일 수 있음)'); }
+    }
+    // 클라우드 저장
+    if (isConnected && workspaceRef) {
+        try {
+            await workspaceRef.child('backups').child(key).set(payload);
+            const snap=await workspaceRef.child('backups').orderByKey().once('value');
+            const keys=Object.keys(snap.val()||{}).sort();
+            if (keys.length>10) {
+                const del={}; keys.slice(0,keys.length-10).forEach(k=>del[k]=null);
+                await workspaceRef.child('backups').update(del);
+            }
+        } catch(e) { console.error('클라우드 백업 실패',e); }
+    }
+    if (autoTrigger) localStorage.setItem('lastAutoBackupDate', todayKST());
+    localStorage.setItem('lastBackupDate', dateStr);
+    return dateStr;
+}
+
+async function runManualBackup() {
+    const btn = document.getElementById('manualBackupBtn');
+    btn.textContent='⏳ 백업 중...'; btn.disabled=true;
+    try {
+        const dateStr = await runBackup('수동',false);
+        showBackupBanner('✅ 백업 완료! ('+dateStr+')','success');
+        if (isConnected) renderBackupTab();
+    } catch(e) { showBackupBanner('❌ 백업 실패: '+e.message,'error'); }
+    btn.textContent='📦 지금 백업 실행'; btn.disabled=false;
 }
 
 async function checkAutoBackup() {
-  const d       = new Date();
-  const day     = d.getDate();
-  const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
-  if (day !== 15 && day !== lastDay) return;
-  const label    = `AUTO_${localDate()}`;
-  const existing = _getBackups().find(b => b.label === label);
-  if (existing) return;
-  const entry = await _createBackup(label);
-  console.info(`[자동백업] ${label} 완료 (거래처 ${entry.clients.length}개, 거래 ${entry.transactions.length}건)`);
-  showToast(`🗄️ 자동 백업 완료 (${localDate()})`);
+    const todayStr = todayKST();
+    const todayDate = new Date(todayStr + 'T12:00:00+09:00');
+    const { day1, day2 } = loadBackupSchedule();
+    if (todayDate.getDate()!==day1 && todayDate.getDate()!==day2) return;
+    const last = localStorage.getItem('lastAutoBackupDate')||'';
+    if (last===todayStr) return;
+    if (!clients.length && !orders.length) return;
+    try { const d=await runBackup('자동',true); showBackupBanner('⏰ 자동 백업 완료! ('+d+')','success'); }
+    catch(e) { showBackupBanner('⚠️ 자동 백업 실패 — 수동 백업을 실행하세요','error'); }
 }
 
-// ── 백업 모달 ─────────────────────────────────────────────────────────────────
-async function openBackupModal() {
-  M.backupModal = { tab:'list', loading:true };
-  _pushModalHistory(); renderModals();
-  await _syncBackupsFromFb();
-  M.backupModal = { tab:'list', loading:false };
-  renderModals();
-}
-function closeBackupModal() { M.backupModal = null; renderModals(); }
-
-async function restoreBackup(id) {
-  const backups = _getBackups();
-  let entry     = backups.find(b => b.id === id);
-  if (!entry && db) {
-    try { const snap = await db.ref(`${BACKUP_FB_PATH}/${id}`).get(); entry = snap.val(); } catch (e) {}
-  }
-  if (!entry) { showToast('백업을 찾을 수 없습니다.'); return; }
-  const dateStr = new Date(entry.date).toLocaleString('ko-KR');
-  M.confirm = {
-    msg: `[${entry.label}]\n${dateStr}\n거래처 ${entry.clients.length}개 / 거래 ${entry.transactions.length}건\n\n이 백업으로 복구할까요?\n현재 데이터는 덮어씌워집니다.`,
-    okStr: `_doRestoreBackup(${id})`,
-  };
-  renderModals();
-}
-
-async function _doRestoreBackup(id) {
-  M.confirm = null;
-  const backups = _getBackups();
-  let entry     = backups.find(b => b.id === id);
-  if (!entry && db) {
-    try { const snap = await db.ref(`${BACKUP_FB_PATH}/${id}`).get(); entry = snap.val(); } catch (e) {}
-  }
-  if (!entry) { showToast('백업을 찾을 수 없습니다.'); return; }
-  await _createBackup(`BEFORE_RESTORE_${localDate()}`);
-  S.clients      = JSON.parse(JSON.stringify(entry.clients));
-  S.transactions = JSON.parse(JSON.stringify(entry.transactions));
-  lsSet('crm_clients', S.clients);
-  lsSet('crm_tx', S.transactions);
-  lsSet('crm_napum_synced', []);
-  try {
-    if (db) { await saveC(); await saveTX(); showToast('✅ 복구 완료 (클라우드 동기화됨)'); }
-    else      showToast('✅ 복구 완료 (로컬 저장)');
-  } catch (e) { showToast('✅ 복구 완료 (클라우드 오류)'); }
-  closeBackupModal(); render();
-}
-
-async function deleteBackup(id) {
-  M.confirm = { msg:'이 백업을 삭제할까요?', okStr:`_doDeleteBackup(${id})` };
-  renderModals();
-}
-async function _doDeleteBackup(id) {
-  M.confirm = null;
-  _saveBackupsLocal(_getBackups().filter(b => b.id !== id));
-  _fbDeleteBackup(id);
-  M.backupModal = { tab:'list', loading:false };
-  renderModals(); showToast('백업이 삭제됐습니다.');
-}
-
-async function createManualBackup() {
-  const label = `MANUAL_${localDate()}_${Date.now().toString().slice(-4)}`;
-  M.backupModal = { tab:'list', loading:true }; renderModals();
-  await _createBackup(label);
-  M.backupModal = { tab:'list', loading:false }; renderModals();
-  showToast('💾 수동 백업이 생성됐습니다.');
-}
-
-function downloadBackup(id) {
-  const entry = _getBackups().find(b => b.id === id); if (!entry) return;
-  const blob  = new Blob([JSON.stringify({ exportedAt:entry.date, version:1, label:entry.label, clients:entry.clients, transactions:entry.transactions }, null, 2)], { type:'application/json' });
-  const url   = URL.createObjectURL(blob);
-  const a     = document.createElement('a');
-  a.href = url; a.download = `crm-backup-${entry.label}.json`; a.style.display = 'none';
-  document.body.appendChild(a); a.click();
-  setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 300);
-}
-
-function buildBackupModal() {
-  if (!M.backupModal) return '';
-  if (M.backupModal.loading) return `
-    <div onclick="closeBackupModal()" style="position:fixed;inset:0;background:rgba(15,23,42,.45);backdrop-filter:blur(4px);z-index:1100;display:flex;align-items:center;justify-content:center;padding:20px;">
-      <div onclick="event.stopPropagation()" style="background:#fff;border-radius:16px;width:100%;max-width:460px;padding:48px 20px;display:flex;flex-direction:column;align-items:center;gap:12px;box-shadow:0 20px 60px rgba(0,0,0,.25);">
-        <div style="font-size:28px;">🗄️</div>
-        <div style="font-size:13px;color:#64748b;">Firebase에서 백업 목록을 불러오는 중...</div>
-      </div>
-    </div>`;
-
-  const backups      = _getBackups();
-  const typeIcon     = lbl => lbl.startsWith('AUTO') ? '🗄️' : lbl.startsWith('BEFORE_RESTORE') ? '🔄' : '💾';
-  const typeLabel    = lbl => lbl.startsWith('AUTO') ? '자동' : lbl.startsWith('BEFORE_RESTORE') ? '복구전' : '수동';
-  const typeBadge    = lbl => lbl.startsWith('AUTO')
-    ? { bg:'#eff6ff', tx:'#1d4ed8', bd:'#bfdbfe' }
-    : lbl.startsWith('BEFORE_RESTORE')
-    ? { bg:'#fef3c7', tx:'#b45309', bd:'#fcd34d' }
-    : { bg:'#f0fdf4', tx:'#16a34a', bd:'#bbf7d0' };
-
-  const rows = backups.length === 0
-    ? `<div style="text-align:center;padding:40px 0;color:#94a3b8;font-size:13px;">저장된 백업이 없습니다.<br>수동 백업을 생성하거나 15일·말일을 기다려주세요.</div>`
-    : backups.map(b => {
-        const c  = typeBadge(b.label);
-        const dt = new Date(b.date).toLocaleString('ko-KR', { month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit' });
-        return `<div style="background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:12px 14px;display:flex;align-items:center;gap:10px;margin-bottom:8px;">
-          <div style="font-size:20px;flex-shrink:0;">${typeIcon(b.label)}</div>
-          <div style="flex:1;min-width:0;">
-            <div style="display:flex;align-items:center;gap:6px;margin-bottom:3px;">
-              <span style="font-size:11px;padding:1px 7px;border-radius:9999px;background:${c.bg};color:${c.tx};border:1px solid ${c.bd};font-weight:600;">${typeLabel(b.label)}</span>
-              <span style="font-size:12px;color:#475569;font-weight:500;">${dt}</span>
-            </div>
-            <div style="font-size:11px;color:#94a3b8;">거래처 ${b.clients.length}개 · 거래 ${b.transactions.length}건</div>
-          </div>
-          <div style="display:flex;gap:5px;flex-shrink:0;">
-            <button onclick="downloadBackup(${b.id})" title="다운로드" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;padding:5px 8px;cursor:pointer;font-size:11px;color:#475569;" onmouseenter="this.style.background='#f0fdf4';this.style.color='#16a34a'" onmouseleave="this.style.background='#f8fafc';this.style.color='#475569'">⬇</button>
-            <button onclick="restoreBackup(${b.id})" title="복구" style="background:#fef3c7;border:1px solid #fcd34d;border-radius:6px;padding:5px 8px;cursor:pointer;font-size:11px;color:#b45309;font-weight:600;" onmouseenter="this.style.background='#fde68a'" onmouseleave="this.style.background='#fef3c7'">복구</button>
-            <button onclick="deleteBackup(${b.id})" title="삭제" style="background:#fff1f2;border:1px solid #fecdd3;border-radius:6px;padding:5px 8px;cursor:pointer;font-size:11px;color:#dc2626;" onmouseenter="this.style.background='#fee2e2'" onmouseleave="this.style.background='#fff1f2'">✕</button>
-          </div>
-        </div>`;
-      }).join('');
-
-  const d       = new Date();
-  const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
-  const nextBackup = d.getDate() < 15 ? '이달 15일' : d.getDate() < lastDay ? `이달 말일(${lastDay}일)` : '다음달 15일';
-
-  return `
-    <div onclick="closeBackupModal()" style="position:fixed;inset:0;background:rgba(15,23,42,.45);backdrop-filter:blur(4px);z-index:1100;display:flex;align-items:center;justify-content:center;padding:20px;">
-      <div onclick="event.stopPropagation()" style="background:#fff;border-radius:16px;width:100%;max-width:460px;max-height:80vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.25);overflow:hidden;">
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:16px 18px;border-bottom:1px solid #e2e8f0;flex-shrink:0;">
-          <div>
-            <div style="font-weight:700;font-size:15px;color:#0f172a;">🗄️ 자동 백업 관리</div>
-            <div style="font-size:11px;color:#94a3b8;margin-top:2px;">다음 자동 백업: ${nextBackup} · 최대 ${BACKUP_MAX}개 보관</div>
-            <div style="font-size:10px;margin-top:3px;color:${db?'#16a34a':'#f59e0b'};">${db?'☁️ Firebase 저장됨':'📴 로컬 저장 (오프라인)'}</div>
-          </div>
-          <button onclick="closeBackupModal()" style="background:none;border:none;cursor:pointer;color:#94a3b8;padding:4px;">${I.x}</button>
-        </div>
-        <div style="padding:12px 16px;border-bottom:1px solid #e2e8f0;flex-shrink:0;">
-          <button onclick="createManualBackup()" style="width:100%;padding:10px;border-radius:8px;border:1.5px dashed #d97706;background:#fffbeb;color:#b45309;font-size:13px;font-weight:600;cursor:pointer;" onmouseenter="this.style.background='#fef3c7'" onmouseleave="this.style.background='#fffbeb'">💾 지금 수동 백업 만들기</button>
-        </div>
-        <div style="flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:12px 16px;">${rows}</div>
-      </div>
-    </div>`;
-}
-
-// ── 초기화 모달 ───────────────────────────────────────────────────────────────
-function openResetModal() {
-  M.resetModal = { step:'select', scope:'all', targetClient:null, confirmText:'', error:null };
-  _pushModalHistory(); renderModals();
-}
-function closeResetModal() { M.resetModal = null; renderModals(); }
-
-function _onResetInput(val) {
-  if (!M.resetModal) return;
-  M.resetModal.confirmText = val;
-  M.resetModal.error       = null;
-  const btn = document.getElementById('resetExecBtn'); if (!btn) return;
-  const rm  = M.resetModal;
-  const tc  = rm.targetClient ? S.clients.find(c => c.id === rm.targetClient) : null;
-  const kw  = (tc ? tc.name : '초기화').trim().normalize('NFC');
-  const ok  = val.trim().normalize('NFC') === kw;
-  btn.style.opacity    = ok ? '1' : '0.5';
-  btn.style.background = ok ? '#dc2626' : '#f87171';
-  btn.style.cursor     = ok ? 'pointer' : 'default';
-}
-
-function goResetConfirm() {
-  const rm = M.resetModal;
-  if (rm.scope === 'client' && !rm.targetClient) { showToast('거래처를 선택하세요.'); return; }
-  M.resetModal = { ...rm, step:'confirm', confirmText:'', error:null };
-  renderModals();
-}
-
-function buildResetModal() {
-  const rm = M.resetModal;
-  const napumTx      = S.transactions.filter(t => t._napumId).length;
-  const localTx      = S.transactions.length - napumTx;
-  const _tc          = rm.targetClient ? S.clients.find(c => c.id === rm.targetClient) : null;
-  const keyword      = _tc ? _tc.name : '초기화';
-  let body = '';
-
-  if (rm.step === 'select') {
-    const scopeOpts = [
-      { key:'all',       icon:'💥', label:'전체 초기화',      desc:`거래처 ${S.clients.length}개 + 거래 내역 ${S.transactions.length}건 모두 삭제`,              color:'#dc2626', bg:'#fff1f2', bd:'#fecdd3' },
-      { key:'txonly',    icon:'🗒', label:'거래 내역만 삭제', desc:`거래처 목록 유지 · 거래 내역 ${S.transactions.length}건만 삭제`,                             color:'#b45309', bg:'#fefce8', bd:'#fef08a' },
-      { key:'localonly', icon:'🔒', label:'로컬 거래만 삭제', desc:`납품 연동 거래(${napumTx}건) 제외 · 직접 입력 거래(${localTx}건)만 삭제`,                   color:'#1d4ed8', bg:'#eff6ff', bd:'#bfdbfe' },
-      { key:'client',    icon:'👤', label:'특정 거래처만',    desc:'거래처 1개와 연관 거래 내역 선택 삭제',                                                        color:'#7c3aed', bg:'#fdf4ff', bd:'#e9d5ff' },
-    ].map(({ key, icon, label, desc, color, bg, bd }) => {
-      const a = rm.scope === key;
-      return `<button onclick="M.resetModal.scope='${key}';renderModals()"
-        style="width:100%;text-align:left;padding:12px 14px;border-radius:10px;border:2px solid ${a?color:bd};background:${a?bg:'#fff'};cursor:pointer;margin-bottom:8px;">
-        <div style="display:flex;align-items:center;gap:8px;">
-          <span style="font-size:18px;">${icon}</span>
-          <div>
-            <div style="font-size:13px;font-weight:700;color:${a?color:'#0f172a'};">${label}</div>
-            <div style="font-size:11px;color:#64748b;margin-top:2px;">${desc}</div>
-          </div>
-          ${a ? `<span style="margin-left:auto;color:${color};font-size:16px;">●</span>` : ''}
-        </div>
-      </button>`;
-    }).join('');
-
-    const clientSelect = rm.scope === 'client' ? `
-      <div style="margin-top:4px;">
-        <div style="font-size:12px;color:#64748b;margin-bottom:6px;">삭제할 거래처 선택</div>
-        <select onchange="M.resetModal.targetClient=Number(this.value)||null;renderModals()"
-          style="width:100%;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;font-size:13px;color:#0f172a;background:#fff;">
-          <option value="">-- 거래처 선택 --</option>
-          ${S.clients.map(c => {
-            const txCount = S.transactions.filter(t => t.clientId === c.id).length;
-            return `<option value="${c.id}"${rm.targetClient===c.id?' selected':''}>${esc(c.name)} (거래 ${txCount}건)</option>`;
-          }).join('')}
-        </select>
-      </div>` : '';
-
-    const napumWarn = napumTx > 0 ? `
-      <div style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 12px;margin-top:12px;font-size:11px;color:#1d4ed8;">
-        💡 납품 관리 연동 거래 <b>${napumTx}건</b>은 CRM에서 삭제해도 납품 관리 앱 데이터에는 영향 없습니다.
-      </div>` : '';
-
-    body = `
-      <div style="background:#fff1f2;border:1px solid #fecdd3;border-radius:10px;padding:12px 14px;margin-bottom:16px;">
-        <div style="font-size:13px;font-weight:700;color:#dc2626;margin-bottom:4px;">⚠️ 주의</div>
-        <div style="font-size:12px;color:#64748b;">삭제된 데이터는 복구할 수 없습니다.<br>납품 관리 앱 원본 데이터에는 영향을 주지 않습니다.</div>
-      </div>
-      <div style="font-size:12px;font-weight:600;color:#475569;margin-bottom:8px;">삭제 범위 선택</div>
-      ${scopeOpts}${clientSelect}${napumWarn}`;
-
-  } else {
-    const txCount     = rm.scope === 'localonly' ? localTx : rm.scope === 'client' ? S.transactions.filter(t => t.clientId === _tc?.id).length : S.transactions.length;
-    const clientCount = rm.scope === 'all' ? S.clients.length : rm.scope === 'client' && _tc ? 1 : 0;
-    body = `
-      <div style="background:#fff1f2;border:2px solid #fecdd3;border-radius:10px;padding:14px;margin-bottom:16px;text-align:center;">
-        <div style="font-size:24px;margin-bottom:6px;">🚨</div>
-        <div style="font-size:14px;font-weight:700;color:#dc2626;margin-bottom:8px;">정말 삭제하시겠습니까?</div>
-        <div style="display:flex;justify-content:center;gap:16px;flex-wrap:wrap;">
-          ${clientCount > 0 ? `<div><div style="font-size:20px;font-weight:700;color:#dc2626;">${clientCount}개</div><div style="font-size:11px;color:#94a3b8;">거래처</div></div>` : ''}
-          <div><div style="font-size:20px;font-weight:700;color:#b45309;">${txCount}건</div><div style="font-size:11px;color:#94a3b8;">거래 내역</div></div>
-        </div>
-      </div>
-      <div style="margin-bottom:14px;">
-        <div style="font-size:12px;color:#64748b;margin-bottom:6px;">확인을 위해 <b style="color:#dc2626;">${esc(keyword)}</b> 를 입력하세요</div>
-        <input id="resetConfirmInput" type="text" value="${esc(rm.confirmText||'')}" placeholder="${esc(keyword)}"
-          style="${ISX}font-size:14px;border-color:${rm.error?'#dc2626':'#e2e8f0'};" ${FB}
-          oninput="_onResetInput(this.value)">
-        ${rm.error ? `<div style="color:#dc2626;font-size:11px;margin-top:4px;">${esc(rm.error)}</div>` : ''}
-      </div>`;
-  }
-
-  const isSelect = rm.step === 'select';
-  const canNext  = isSelect && (rm.scope !== 'client' || rm.targetClient != null);
-  const matchKw  = (rm.confirmText || '').trim().normalize('NFC') === keyword;
-
-  return `
-    <div onclick="closeResetModal()" style="position:fixed;inset:0;background:rgba(15,23,42,.5);z-index:50;display:flex;align-items:flex-end;justify-content:center;padding-bottom:env(safe-area-inset-bottom);">
-      <div onclick="event.stopPropagation()" style="background:#fff;border-radius:18px 18px 0 0;width:100%;max-width:480px;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 -8px 40px rgba(0,0,0,.2);">
-        <div style="width:36px;height:4px;background:#e2e8f0;border-radius:2px;margin:10px auto 0;flex-shrink:0;"></div>
-        <div style="display:flex;align-items:center;justify-content:space-between;padding:14px 18px 12px;border-bottom:1px solid #f1f5f9;flex-shrink:0;">
-          <div>
-            <div style="font-weight:700;color:#0f172a;font-size:15px;">🗑 거래처 초기화</div>
-            <div style="color:#94a3b8;font-size:11px;margin-top:1px;">CRM 앱 데이터만 삭제 · 납품 관리 앱 영향 없음</div>
-          </div>
-          <button onclick="closeResetModal()" style="background:none;border:none;cursor:pointer;color:#94a3b8;">${I.x}</button>
-        </div>
-        <div style="overflow-y:auto;padding:16px 18px;flex:1;-webkit-overflow-scrolling:touch;">${body}</div>
-        <div style="display:flex;gap:8px;padding:12px 18px;border-top:1px solid #f1f5f9;flex-shrink:0;">
-          ${isSelect
-            ? `<button onclick="closeResetModal()" style="flex:1;padding:11px;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:10px;font-size:13px;cursor:pointer;">취소</button>
-               <button onclick="goResetConfirm()" ${canNext?'':'disabled'} style="flex:2;padding:11px;border:none;background:${canNext?'#dc2626':'#e2e8f0'};color:${canNext?'#fff':'#94a3b8'};border-radius:10px;font-size:13px;font-weight:700;cursor:${canNext?'pointer':'default'};">다음 →</button>`
-            : `<button onclick="M.resetModal.step='select';renderModals()" style="flex:1;padding:11px;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:10px;font-size:13px;cursor:pointer;">← 뒤로</button>
-               <button id="resetExecBtn" onclick="confirmReset()" style="flex:2;padding:11px;border:none;background:${matchKw?'#dc2626':'#f87171'};color:#fff;border-radius:10px;font-size:13px;font-weight:700;cursor:${matchKw?'pointer':'default'};opacity:${matchKw?'1':'0.5'};">🗑 영구 삭제</button>`}
-        </div>
-      </div>
-    </div>`;
-}
-
-async function confirmReset() {
-  const inputEl = document.getElementById('resetConfirmInput');
-  const input   = (inputEl?.value || '').trim().normalize('NFC');
-  const rm      = M.resetModal;
-  const tc      = rm.targetClient ? S.clients.find(c => c.id === rm.targetClient) : null;
-  const keyword = (tc ? tc.name : '초기화').trim().normalize('NFC');
-
-  if (input !== keyword) {
-    showToast(`"${keyword}"를 정확히 입력하세요.`);
-    if (inputEl) inputEl.style.borderColor = '#dc2626'; return;
-  }
-
-  const scope = rm.scope;
-  try {
-    if (scope === 'all') {
-      S.transactions = []; S.clients = [];
-      lsSet('crm_clients', []); lsSet('crm_tx', []); lsSet('crm_napum_synced', []);
-    } else if (scope === 'txonly') {
-      S.transactions = [];
-      lsSet('crm_tx', []); lsSet('crm_napum_synced', []);
-    } else if (scope === 'localonly') {
-      S.transactions = S.transactions.filter(t => t._napumId);
-      lsSet('crm_tx', S.transactions);
-    } else if (scope === 'client' && tc) {
-      S.transactions = S.transactions.filter(t => t.clientId !== tc.id);
-      S.clients      = S.clients.filter(c => c.id !== tc.id);
-      if (S.cExpanded === tc.id) S.cExpanded = null;
-      lsSet('crm_clients', S.clients); lsSet('crm_tx', S.transactions);
-    }
-  } catch (e) {
-    console.error('로컬 초기화 오류:', e);
-    showToast('⚠️ 초기화 중 오류가 발생했습니다.'); return;
-  }
-
-  closeResetModal(); render();
-  const labels = { all:'전체 초기화', txonly:'거래 내역 삭제', localonly:'로컬 거래 삭제', client:`${tc?.name||''} 삭제` };
-  showToast('✅ ' + labels[scope] + ' 완료');
-
-  if (db) {
+async function renderBackupTab() {
+    const {day1,day2}=loadBackupSchedule();
+    document.getElementById('schedDay1').value=day1;
+    document.getElementById('schedDay2').value=day2;
+    document.getElementById('lastAutoBackup').textContent=localStorage.getItem('lastAutoBackupDate')||'없음';
+    if (!isConnected) return;
+    const el=document.getElementById('backupList');
+    el.innerHTML='<div class="empty"><div class="empty-text">⏳ 로딩 중...</div></div>';
     try {
-      if (scope === 'all') {
-        await Promise.all([db.ref('clients').set(null), db.ref('transactions').set(null)]);
-      } else if (scope === 'txonly') {
-        await db.ref('transactions').set(null);
-      } else if (scope === 'localonly') {
-        await db.ref('transactions').set(S.transactions.length ? toMap(S.transactions) : null);
-      } else if (scope === 'client' && tc) {
-        await Promise.all([
-          db.ref('clients').set(S.clients.length ? toMap(S.clients) : null),
-          db.ref('transactions').set(S.transactions.length ? toMap(S.transactions) : null),
-        ]);
-      }
-    } catch (e) {
-      console.warn('Firebase 초기화 실패 (로컬은 삭제됨):', e);
-      showToast('⚠️ 클라우드 삭제 실패 (로컬은 완료)');
-    }
-  }
+        const snap=await workspaceRef.child('backups').orderByKey().once('value');
+        const data=snap.val();
+        if (!data||!Object.keys(data).length) { el.innerHTML='<div class="empty"><div class="empty-icon">☁️</div><div class="empty-text">저장된 백업이 없습니다</div></div>'; return; }
+        el.innerHTML = Object.entries(data).sort((a,b)=>b[0].localeCompare(a[0])).map(([key,b])=>`
+            <div class="backup-item">
+                <div>
+                    <div class="backup-item-label">${b.backupDate}${b.autoTrigger?'<span class="auto-badge">자동</span>':''}${b.label?` <span style="font-size:10px;color:var(--text2);">[${b.label}]</span>`:''}</div>
+                    <div class="backup-item-meta">거래처 ${b.clientsCount}개 · 전표 ${b.ordersCount}건</div>
+                </div>
+                <div class="backup-item-actions">
+                    <button class="btn-restore" onclick="restoreBackup('${key}')">복원</button>
+                    <button class="btn-del-backup" onclick="deleteBackup('${key}')">✕</button>
+                </div>
+            </div>`).join('');
+    } catch(e) { el.innerHTML='<div class="empty"><div class="empty-text">목록 로드 실패</div></div>'; }
 }
+
+async function restoreBackup(key) {
+    if (!isConnected||!workspaceRef) return toast('❗ Firebase 연결 후 복원 가능합니다');
+    if (!await customConfirm('이 백업으로 복원하면 현재 데이터가 덮어씌워집니다. 계속하시겠습니까?')) return;
+    try {
+        const snap=await workspaceRef.child('backups').child(key).once('value');
+        const data=snap.val();
+        if (!data) return toast('❗ 백업 데이터를 찾을 수 없습니다');
+
+        // 복원 전 현재 데이터 클라우드 백업 (파일 다운로드 없이 클라우드만)
+        try {
+            const { dateStr: bDateStr, key: bKey } = nowKST();
+            const bPayload={ label:'복원전_자동', backupDate: bDateStr,
+                autoTrigger:false, clients, orders, prices, stockItems,
+                clientsCount:clients.length, ordersCount:orders.length };
+            await workspaceRef.child('backups').child(bKey).set(bPayload);
+        } catch(be) { console.warn('복원 전 백업 실패(무시):', be); }
+
+        // ── 리스너 일시 중단 → 복원 데이터가 리스너로 덮어쓰이는 것 방지 ──
+        workspaceRef.off('value');
+
+        // ── 공통 정규화 함수로 복원 데이터 처리 ──
+        const normalized = normalizeBackupData(data);
+        clients    = normalized.clients;
+        orders     = normalized.orders;
+        if (data.prices)               prices     = data.prices;
+        if (normalized.stockItems?.length) stockItems = normalized.stockItems;
+
+        // lastHash 초기화 후 Firebase에 복원 데이터 업로드
+        lastHash={clients:'',orders:'',prices:'',stock:''};
+        saveToLocal();
+
+        // Firebase 즉시 업로드 (debounce 없이)
+        const ch=dataHash(clients), oh=dataHash(orders), ph=dataHash(prices), sh=dataHash(stockItems);
+        await workspaceRef.update({
+            clients, orders, prices, stockItems,
+            lastUpdated: new Date().toISOString(),
+            writtenBy: SESSION_ID
+        });
+        lastHash={clients:ch, orders:oh, prices:ph, stock:sh};
+
+        // 리스너 재등록 — 공용 _fbValueHandler 사용
+        workspaceRef.off('value');
+        workspaceRef.on('value', _fbValueHandler);
+
+        _fullRender();
+        showBackupBanner('✅ 복원 완료! ('+data.backupDate+' 시점)','success');
+        renderBackupTab();
+        toast('✅ 복원 완료', 'var(--green)');
+    } catch(e) { showBackupBanner('❌ 복원 실패: '+e.message,'error'); }
+}
+
+async function deleteBackup(key) {
+    if (!await customConfirm('이 백업을 삭제하시겠습니까? 삭제 후 복구할 수 없습니다.')) return;
+    try { await workspaceRef.child('backups').child(key).remove(); showBackupBanner('🗑️ 삭제 완료','success'); renderBackupTab(); }
+    catch(e) { showBackupBanner('❌ 삭제 실패: '+e.message,'error'); }
+}
+
+function showBackupBanner(msg,type) {
+    const el=document.getElementById('backupBanner');
+    if(!el)return;
+    el.textContent=msg; el.className='status-banner '+type;
+    clearTimeout(el._t); el._t=setTimeout(()=>{el.className='status-banner';},5000);
+}
+

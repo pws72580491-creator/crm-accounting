@@ -1,488 +1,502 @@
-// ── Global State ──────────────────────────────────────────────────────────────
-let S = {
-  view: 'dashboard',
-  // 거래처
-  clients: [], cSearch: '', cFilter: '전체', cWsFilter: '전체', cGroupFilter: '전체', cExpanded: null,
-  // 거래
-  transactions: [], txSearch: '', txTf: '전체', txSf: '전체', txWsFilter: '전체',
-  txMonth: null, txPeriodMode: 'daily', txDate: null, txWeek: null,
-  // UI
-  drawerOpen: false, rcvSearch: '',
-  rcvPeriod: 'month',   // 'month' | 'quarter' | 'all'
-  rcvMonth: (() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`; })(),
-  // 대시보드 PIN 잠금
-  dashLocked: false,
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  § 0  전역 상태 & 설정                                             ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+'use strict';
+
+// ─── Firebase 설정 (하드코딩 — 워크스페이스 ID만 입력하면 됨) ───
+const FIREBASE_CONFIG = {
+    apiKey: "AIzaSyD9AaPcjjI842XYEz6Man4tgzZmcoFdSHE",
+    authDomain: "test-b1713.firebaseapp.com",
+    databaseURL: "https://test-b1713-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "test-b1713",
+    storageBucket: "test-b1713.firebasestorage.app",
+    messagingSenderId: "96408145171",
+    appId: "1:96408145171:web:30a300ff2f7b735d929ee6",
+    measurementId: "G-LXQ1XZMV02"
 };
 
-let M = {
-  clientModal: null, txModal: null, confirm: null,
-  scanModal: null, syncModal: null,
-  qpModal: null, batchPayModal: null,
-  statModal: null, resetModal: null, backupModal: null,
-};
+// ─── 사용설명서 URL (GitHub raw 주소 — 직접 수정하세요) ───
+// 예: 'https://raw.githubusercontent.com/YOUR_ID/YOUR_REPO/main/manual.md'
+const MANUAL_URL = 'https://raw.githubusercontent.com/pws72580491-creator/Delivery/main/manual.md';
 
-// ── Firebase ──────────────────────────────────────────────────────────────────
-let db        = null;
-let DB_ONLINE  = false;
-let _fbReady   = false;
+// ─── 탭 순서 ───
+const TAB_ORDER = ['dashboard','clients','unpaid','delivery','history','stock','settlement','backup','settings'];
 
-function _syncBadgeHTML() {
-  const base = 'margin-top:6px;text-align:center;font-size:10px;font-weight:600;padding:3px 0;border-radius:6px;border:1px solid ';
-  if (!_fbReady) return `<div id="syncBadge" style="${base}#e2e8f0;background:#f1f5f9;color:#94a3b8;">● 로컬 모드</div>`;
-  if (DB_ONLINE) return `<div id="syncBadge" style="${base}#86efac;background:#dcfce7;color:#16a34a;">● 동기화됨</div>`;
-  return `<div id="syncBadge" style="${base}#fcd34d;background:#fef3c7;color:#b45309;">● 오프라인</div>`;
-}
-
-function updateSyncBadge() {
-  const el = document.getElementById('syncBadge');
-  if (!el) return;
-  const tmp = document.createElement('div');
-  tmp.innerHTML = _syncBadgeHTML();
-  const newEl = tmp.firstElementChild;
-  el.style.cssText = newEl.style.cssText;
-  el.textContent   = newEl.textContent;
-}
-
-function loadScript(src) {
-  return new Promise((res, rej) => {
-    const s = document.createElement('script');
-    s.src = src; s.async = true;
-    s.onload = res; s.onerror = rej;
-    document.head.appendChild(s);
-  });
-}
-
-async function initFirebase() {
-  try {
-    await loadScript('https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js');
-    await loadScript('https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js');
-    if (!firebase.apps.length) firebase.initializeApp(FB_CFG);
-    db = firebase.database();
-    _fbReady = true;
-    db.ref('.info/connected').on('value', snap => {
-      DB_ONLINE = !!snap.val();
-      updateSyncBadge();
+// ─── 상태 ───
+let clients    = _loadJSON('p_clients')   || _loadJSON('clients')   || [];
+let orders     = (_loadJSON('p_orders') || _loadJSON('orders') || [])
+    .map(o => {
+        if (o._noItems) { delete o._noItems; }
+        if (!Array.isArray(o.items)) o.items = [];
+        else o.items = o.items.map(it => ({
+            ...it,
+            name: (it.name||'').trim(),
+            total: it.total ?? (Number(it.qty)||0) * (Number(it.price)||0)  // ① it.total 복원
+        }));
+        return o;
     });
-  } catch (e) {
-    console.warn('Firebase SDK 로드 실패 → 로컬 모드로 동작:', e.message);
-    db = null; _fbReady = false;
-    updateSyncBadge();
-  }
-}
+let prices     = _loadJSON('prices')      || {};
 
-// ── Persistence ───────────────────────────────────────────────────────────────
-function lsGet(key, def) {
-  try { const v = JSON.parse(localStorage.getItem(key)); return v != null ? v : def; }
-  catch { return def; }
-}
-function lsSet(key, val) {
-  try { localStorage.setItem(key, JSON.stringify(val)); }
-  catch (e) {
-    if (e.name === 'QuotaExceededError' || e.code === 22) {
-      try {
-        ['crm_napum_synced', 'crm_napum_void_migrated_v1'].forEach(k => localStorage.removeItem(k));
-        localStorage.setItem(key, JSON.stringify(val));
-        console.warn('[lsSet] 용량 초과 → 보조 캐시 정리 후 재저장 성공');
-      } catch (e2) {
-        console.error('[lsSet] 저장 실패 (용량 초과):', key, e2.message);
-        showToast('⚠️ 저장 공간 부족. 백업 후 오래된 데이터를 정리하세요.');
-      }
-    }
-  }
-}
+// 거래처 데이터 정규화 (외부 백업 호환)
+clients = clients.map(c => {
+    if (typeof c === 'string') return { id: _uid(), name: c, phone:'', address:'', note:'', createdAt: new Date().toISOString() };
+    if (!c.id) c.id = _uid();
+    c.id = String(c.id);                          // int id → string 타입 통일
+    if (!c.note && c.memo) c.note = c.memo;       // 구버전 백업 호환 (memo → note)
+    if (!c.note) c.note = '';
+    // isHidden: 저장된 값 보존 (false면 목록에 표시, true면 숨겨짐)
+    if (c.isHidden === undefined) c.isHidden = false;
+    return c;
+});
 
-const toMap = arr => arr.reduce((m, o) => { m[o.id] = o; return m; }, {});
-const toArr = map => Object.values(map || {}).sort((a, b) => a.id - b.id);
-
-// ── Firebase 저장 헬퍼 ────────────────────────────────────────────────────────
-async function saveC() {
-  lsSet('crm_clients', S.clients);
-  if (!db) return;
-  try { await db.ref('clients').set(toMap(S.clients)); }
-  catch (e) { showToast('⚠️ 클라우드 저장 실패 (로컬 저장됨)'); console.warn('saveC:', e); }
-}
-async function saveTX() {
-  lsSet('crm_tx', S.transactions);
-  if (!db) return;
-  try { await db.ref('transactions').set(toMap(S.transactions)); }
-  catch (e) { showToast('⚠️ 클라우드 저장 실패 (로컬 저장됨)'); console.warn('saveTX:', e); }
-}
-async function _saveOneClient(obj) {
-  obj.updatedAt = Date.now();
-  lsSet('crm_clients', S.clients);
-  if (!db) return;
-  try { await db.ref('clients/' + obj.id).set(obj); }
-  catch (e) { showToast('⚠️ 클라우드 저장 실패 (로컬 저장됨)'); console.warn('_saveOneClient:', e); }
-}
-async function _saveOneTx(obj) {
-  obj.updatedAt = Date.now();
-  lsSet('crm_tx', S.transactions);
-  if (!db) return;
-  try { await db.ref('transactions/' + obj.id).set(obj); }
-  catch (e) { showToast('⚠️ 클라우드 저장 실패 (로컬 저장됨)'); console.warn('_saveOneTx:', e); }
-}
-async function _deleteOneClient(id) {
-  lsSet('crm_clients', S.clients);
-  if (!db) return;
-  try { await db.ref('clients/' + id).remove(); }
-  catch (e) { console.warn('_deleteOneClient:', e); }
-}
-async function _deleteOneTx(id) {
-  lsSet('crm_tx', S.transactions);
-  if (!db) return;
-  try { await db.ref('transactions/' + id).remove(); }
-  catch (e) { console.warn('_deleteOneTx:', e); }
-}
-async function _uploadAll() {
-  if (!db) return;
-  await Promise.all([
-    db.ref('clients').set(toMap(S.clients)),
-    db.ref('transactions').set(toMap(S.transactions)),
-  ]);
-}
-
-// ── Firebase 실시간 리스너 ────────────────────────────────────────────────────
-let _offC = null, _offTX = null;
-function _attachListeners() {
-  if (!db) return;
-  if (_offC)  { db.ref('clients').off('value', _offC); }
-  if (_offTX) { db.ref('transactions').off('value', _offTX); }
-
-  _offC = db.ref('clients').on('value', snap => {
-    const arr = toArr(snap.val());
-    if (JSON.stringify(arr) === JSON.stringify(S.clients)) return;
-    S.clients = arr; lsSet('crm_clients', S.clients); render();
-  }, e => console.warn('clients 리스너:', e));
-
-  _offTX = db.ref('transactions').on('value', snap => {
-    const incoming = toArr(snap.val());
-    // dlControlled 플래그가 있는 거래는 납품 관리 앱이 마지막으로 결제 처리한 것
-    // → CRM 로컬 값과 병합 시 결제 필드를 서버 값으로 우선 반영
-    const merged = incoming.map(inTx => {
-      if (!inTx.dlControlled) return inTx;
-      // 로컬 거래를 base로 사용해 _napumId, memo, clientId 등 CRM 전용 필드 보존
-      const local = S.transactions.find(t => t.id === inTx.id);
-      if (!local) return inTx;
-      // 납품 관리 앱이 결제 처리 → 로컬 base에 결제 필드만 덮어씀 (local.dlControlled 여부 무관)
-      return {
-        ...local,
-        status:           inTx.status,
-        paidAmount:       inTx.paidAmount,
-        paidAt:           inTx.paidAt,
-        paidMethod:       inTx.paidMethod,
-        paidMethodDetail: inTx.paidMethodDetail,
-        discount:         inTx.discount,
-        dlControlled:     true,
-      };
-    });
-    if (JSON.stringify(merged) === JSON.stringify(S.transactions)) return;
-    S.transactions = merged; lsSet('crm_tx', S.transactions); render();
-  }, e => console.warn('transactions 리스너:', e));
-}
-
-// ── CRUD ──────────────────────────────────────────────────────────────────────
-function saveClient(f) {
-  if (f.id) { S.clients = S.clients.map(c => c.id === f.id ? f : c); _saveOneClient(f); }
-  else { const nf = { ...f, id: nextId(S.clients) }; S.clients = [...S.clients, nf]; _saveOneClient(nf); }
-  lsSet('crm_clients', S.clients);
-  M.clientModal = null; render();
-}
-function deleteClient(id) {
-  S.transactions.filter(t => t.clientId === id).forEach(t => _deleteOneTx(t.id));
-  _deleteOneClient(id);
-  S.clients      = S.clients.filter(c => c.id !== id);
-  S.transactions = S.transactions.filter(t => t.clientId !== id);
-  lsSet('crm_clients', S.clients); lsSet('crm_tx', S.transactions);
-  if (S.cExpanded === id) S.cExpanded = null;
-  M.confirm = null; render();
-}
-function saveTxFn(f) {
-  if (f.id) { S.transactions = S.transactions.map(t => t.id === f.id ? f : t); _saveOneTx(f); }
-  else { const nf = { ...f, id: nextId(S.transactions) }; S.transactions = [...S.transactions, nf]; _saveOneTx(nf); }
-  lsSet('crm_tx', S.transactions);
-  M.txModal = null; render();
-}
-function deleteTxFn(id) {
-  _deleteOneTx(id);
-  S.transactions = S.transactions.filter(t => t.id !== id);
-  lsSet('crm_tx', S.transactions);
-  M.confirm = null; render();
-}
-
-/** 상태 토글 (배지 클릭) */
-function toggleStatus(txId) {
-  let updatedTx = null;
-  S.transactions = S.transactions.map(t => {
-    if (t.id !== txId) return t;
-    const newStatus = TX_STATUS_NEXT[t.status] || t.status;
-    const isFull    = isTxComplete(newStatus);
-    const isPending = newStatus === TX_STATUS.UNPAID || newStatus === TX_STATUS.UNBILLED;
-    const u = { ...t, status: newStatus };
-    if (isFull && !u.paidAmount) {
-      u.paidAmount = t.amount + t.tax;
-      u.paidAt     = new Date().toISOString();
-      u.paidMethod = u.paidMethod || 'cash';
-    } else if (isPending) {
-      delete u.paidAmount; delete u.paidAt;
-      delete u.paidMethod; delete u.paidMethodDetail;
-    }
-    delete u.dlControlled; // CRM이 직접 처리 → 납품 관리 앱 우선권 해제
-    updatedTx = u; return u;
-  });
-  if (updatedTx) _saveOneTx(updatedTx); else saveTX();
-  lsSet('crm_tx', S.transactions);
-  render();
-  _afterNapumPatch(updatedTx);
-}
-
-/** 상태 직접 지정 */
-function completeStatus(txId, status) {
-  let updatedTx = null;
-  S.transactions = S.transactions.map(t => {
-    if (t.id !== txId) return t;
-    const isFull = isTxComplete(status);
-    const u = { ...t, status };
-    if (isFull && !u.paidAmount) {
-      u.paidAmount = t.amount + t.tax;
-      u.paidAt     = new Date().toISOString();
-      u.paidMethod = u.paidMethod || 'cash';
-    }
-    delete u.dlControlled; // CRM이 직접 처리 → 납품 관리 앱 우선권 해제
-    updatedTx = u; return u;
-  });
-  if (updatedTx) _saveOneTx(updatedTx); else saveTX();
-  lsSet('crm_tx', S.transactions);
-  render();
-  _afterNapumPatch(updatedTx);
-}
-
-/** CRM이 직접 패치한 napumId 목록 (Firebase echo 구분용) */
-const _napumOwnPatchKeys = new Set();
-
-/** 납품 역방향 패치 공통 헬퍼 */
-function _afterNapumPatch(tx, delayMs = 0) {
-  if (!tx || !tx._napumId) return;
-  const dopatch = () => {
-    _napumOwnPatchKeys.add(tx._napumId);
-    _patchNapumOrder(tx._napumId, _buildNapumPatch(tx))
-      .then(ok => {
-        if (ok) {
-          showToast('📦 납품 관리에도 반영됨');
-          // 패치 성공 후 납품 앱 Firebase에서 즉시 re-fetch해 CRM UI 갱신
-          _refetchNapumOrderAfterPatch(tx._napumId);
-        } else {
-          _napumOwnPatchKeys.delete(tx._napumId);
-          showToast('⚠️ 납품 관리 반영 실패 (로그 확인)');
-        }
-      })
-      .catch(() => {
-        _napumOwnPatchKeys.delete(tx._napumId);
-        showToast('⚠️ 납품 관리 반영 실패');
-      });
-  };
-  if (delayMs > 0) setTimeout(dopatch, delayMs); else dopatch();
-}
-
-/** 패치 후 Firebase에서 해당 order를 즉시 re-fetch해 CRM UI 갱신 */
-async function _refetchNapumOrderAfterPatch(napumKey) {
-  if (!napumKey || !napumKey.includes(':')) return;
-  const sep     = napumKey.lastIndexOf(':');
-  const wsId    = napumKey.slice(0, sep);
-  const orderId = napumKey.slice(sep + 1);
-  try {
-    if (typeof firebase === 'undefined') return;
-    const napumDb = _getNapumApp().database();
-    const snap    = await napumDb.ref(`workspaces/${wsId}/orders/${orderId}`).once('value');
-    if (!snap.exists()) return;
-    const order = snap.val();
-    let changed = false;
-    S.transactions = S.transactions.map(t => {
-      if (t._napumId !== napumKey) return t;
-      const prev = JSON.stringify(t);
-      const next = {
-        ...t,
-        // order.isPaid=false 시 상태를 미수금으로 명시 (이전 상태 유지하지 않음)
-        status:     order.isPaid
-          ? (t.status === TX_STATUS.UNBILLED ? TX_STATUS.BILLED : TX_STATUS.PAID)
-          : TX_STATUS.UNPAID,
-        paidAmount: order.paidAmount  !== undefined ? order.paidAmount  : t.paidAmount,
-        paidAt:     order.paidAt      !== undefined ? order.paidAt      : t.paidAt,
-        paidMethod: order.paidMethod  !== undefined ? order.paidMethod  : t.paidMethod,
-      };
-      // 완납 취소 시 결제 관련 필드 명시적 삭제
-      if (!order.isPaid) {
-        delete next.paidAt; delete next.paidMethod; delete next.paidMethodDetail;
-      } else if (order.paidMethodDetail) {
-        next.paidMethodDetail = order.paidMethodDetail;
-      }
-      if (JSON.stringify(next) !== prev) changed = true;
-      return next;
-    });
-    if (changed) { lsSet('crm_tx', S.transactions); render(); }
-    // 자기 패치 echo 허용 처리 완료 후 제거
-    setTimeout(() => _napumOwnPatchKeys.delete(napumKey), 3000);
-  } catch (e) {
-    console.warn('[refetch] 납품 order re-fetch 실패:', e.message);
-    _napumOwnPatchKeys.delete(napumKey);
-  }
-}
-
-// ── 데이터 로드 ───────────────────────────────────────────────────────────────
-async function loadData() {
-  S.txMonth = thisMonth();
-  S.txDate  = localDate();
-  S.txWeek  = null;
-
-  // 1) 로컬 캐시 즉시 렌더
-  S.clients      = lsGet('crm_clients', SAMPLE_CLIENTS);
-  S.transactions = lsGet('crm_tx', SAMPLE_TX);
-
-  // 마이그레이션 1: 납품 연동 거래의 잘못된 tax 보정
-  let _migrated = false;
-  S.transactions = S.transactions.map(t => {
-    if (t._napumId && t.tax > 0 && Math.round(t.amount * 0.1) === t.tax) {
-      _migrated = true;
-      return { ...t, tax: 0 };
-    }
-    return t;
-  });
-  if (_migrated) {
-    lsSet('crm_tx', S.transactions);
-    console.info('[마이그레이션1] 납품 연동 거래의 tax 자동 보정 완료');
-  }
-
-  // 마이그레이션 2: isVoid(타인거래) 누락 건 재동기화 유도
-  const _syncedMigKey = 'crm_napum_void_migrated_v2';
-  if (!lsGet(_syncedMigKey, false)) {
-    lsSet('crm_napum_synced', []);
-    lsSet('crm_napum_void_migrated_v1', true);
-    lsSet(_syncedMigKey, true);
-    console.info('[마이그레이션2] 타인거래 거래처 자동생성 포함 재동기화');
-  }
-
-  try {
-    if (typeof render === 'function') render();
-  } catch (e) {
-    console.error('[loadData] render 오류:', e);
-  } finally {
-    hideSplash();
-  }
-
-  // 2) Firebase 초기화
-  await initFirebase();
-  updateSyncBadge();
-
-  if (!db) {
-    showToast('📴 오프라인 모드 (로컬 저장)');
-    return;
-  }
-
-  // 3) RTDB 최신 데이터 로드
-  try {
-    const [csSnap, txSnap] = await Promise.all([
-      db.ref('clients').get(),
-      db.ref('transactions').get(),
-    ]);
-    const csVal = csSnap.val(), txVal = txSnap.val();
-    if (csVal || txVal) {
-      S.clients      = toArr(csVal);
-      S.transactions = toArr(txVal);
-      lsSet('crm_clients', S.clients);
-      lsSet('crm_tx', S.transactions);
-      render();
+// 납품 데이터 정규화 (외부 백업 호환)
+orders = orders.map(o => {
+    if (!o.id) o.id = _uid();
+    o.id = String(o.id);                           // int id → string 타입 통일 (clients와 동일)
+    if (!o.clientName && o.client) o.clientName = o.client;
+    if (o.clientId !== undefined) o.clientId = String(o.clientId); // int→string 타입 통일
+    if (!o.clientId) {
+        const found = clients.find(c => c.name === o.clientName);
+        o.clientId = found ? found.id : '';
     } else {
-      await _uploadAll();
-    }
-  } catch (e) {
-    console.warn('RTDB 로드 실패, 로컬 캐시 사용:', e.message);
-  }
-
-  // 4) CRM 실시간 리스너
-  _attachListeners();
-
-  // 5) 납품 앱 실시간 리스너
-  attachNapumListeners().catch(e => console.warn('납품 리스너 시작 실패:', e));
-
-  // 5-1) 백그라운드 복귀 / 네트워크 복구 시 리스너 재연결 (최초 1회만 등록)
-  if (!window._napumLifecycleBound) {
-    window._napumLifecycleBound = true;
-
-    // 안드로이드 백그라운드 복귀 감지 → 강제 재연결
-    document.addEventListener('visibilitychange', () => {
-      if (document.visibilityState === 'visible') {
-        console.info('[납품] 포그라운드 복귀 → 리스너 강제 재연결');
-        setTimeout(() => _reattachNapumListenersIfNeeded(true), 800);
-      }
-    });
-
-    // 네트워크 재연결 감지 → 강제 재연결
-    window.addEventListener('online', () => {
-      console.info('[납품] 네트워크 복구 → 리스너 강제 재연결');
-      setTimeout(() => _reattachNapumListenersIfNeeded(true), 1000);
-    });
-
-    // pageshow: iOS Safari 뒤로가기 캐시 복귀 → 강제 재연결
-    window.addEventListener('pageshow', e => {
-      if (e.persisted) {
-        console.info('[납품] pageshow(캐시 복귀) → 리스너 강제 재연결');
-        setTimeout(() => _reattachNapumListenersIfNeeded(true), 800);
-      }
-    });
-  }
-
-  // 6) 마이그레이션된 데이터 Firebase 반영
-  if (_migrated && db) {
-    try { await db.ref('transactions').set(toMap(S.transactions)); }
-    catch (e) { console.warn('마이그레이션 클라우드 반영 실패:', e); }
-  }
-
-  // 7) 자동 백업 체크
-  setTimeout(async () => {
-    await _syncBackupsFromFb();
-    checkAutoBackup();
-  }, 1500);
-}
-
-// ── Export / Import ───────────────────────────────────────────────────────────
-function exportData() {
-  const data = {
-    exportedAt: new Date().toISOString(), version: 1,
-    clients: S.clients, transactions: S.transactions,
-  };
-  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-  const url  = URL.createObjectURL(blob);
-  const a    = document.createElement('a');
-  a.href = url; a.download = `crm-data-${localDate()}.json`; a.style.display = 'none';
-  document.body.appendChild(a); a.click();
-  setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 300);
-  showToast('데이터를 저장했습니다.');
-}
-
-function importData() {
-  const input = document.createElement('input');
-  input.type = 'file'; input.accept = '.json'; input.style.display = 'none';
-  document.body.appendChild(input);
-  input.onchange = e => {
-    const file = e.target.files[0];
-    document.body.removeChild(input);
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async ev => {
-      try {
-        const data = JSON.parse(ev.target.result);
-        if (!Array.isArray(data.clients) || !Array.isArray(data.transactions)) {
-          showToast('올바른 CRM 백업 파일이 아닙니다.'); return;
+        // clientId가 있으면 현재 거래처 이름과 다를 경우 자동 보정 (거래처명 변경 후 미반영 복구)
+        const linked = clients.find(c => c.id === o.clientId);
+        if (linked && linked.name !== o.clientName) {
+            o.clientName = linked.name;
         }
-        const validC = data.clients.filter(c => c.id && c.name && c.type);
-        const validT = data.transactions.filter(t => t.id && t.clientId && t.date && t.type && typeof t.amount === 'number');
-        if (!confirm(`거래처 ${validC.length}개, 거래 ${validT.length}건을 불러옵니다.\n현재 데이터는 덮어씌워집니다. 계속할까요?`)) return;
-        S.clients = validC; S.transactions = validT;
-        await saveC(); await saveTX();
-        render(); showToast('데이터를 불러왔습니다.');
-      } catch (err) { showToast('파일을 읽는 중 오류가 발생했습니다.'); }
-    };
-    reader.readAsText(file);
-  };
-  // iOS Safari: input이 DOM에 있어야 파일 선택창 열림
-  input.click();
+    }
+    o.total = Number(o.total ?? o.totalAmount ?? 0);
+    if (!o.note && o.memo) o.note = o.memo;       // 구버전 백업 호환 (memo → note)
+    if (!o.note) o.note = '';
+    if (!o.isVoid) o.isVoid = false;              // isVoid 복원 (없으면 false)
+    return o;
+});
+
+let tempGroups = [];
+let editingClientId = null;
+
+// ─── 재고 ───
+let stockItems     = (_loadJSON('p_stock') || []).map(si => si ? {
+    id: si.id || _uid(), name: (si.name || '').trim(), qty: Number(si.qty ?? 0),
+    unit: si.unit || '개', low: Number(si.low ?? 10), danger: Number(si.danger ?? 3),
+    note: si.note || '', log: Array.isArray(si.log) ? si.log : [],
+    updatedAt: si.updatedAt || new Date().toISOString()
+} : null).filter(Boolean);
+let stockSortMode  = 'name';
+// 최초 실행(null) 또는 '1'이면 ON — 기본값 ON
+let stockAutoDeduct = localStorage.getItem('stockAutoDeduct') !== '0';
+let _adjType = 'in';
+
+// ─── 성능 캐시 ───
+// orders가 바뀔 때마다 invalidateOrdersCache()로 무효화
+let _itemNamesCache    = null;  // 전체 품목명 Set → 정렬 배열
+let _clientItemsCache  = null;  // clientId → [{name,price,date}]
+let _clientStatsCache  = null;  // clientId/name → {count,total,unpaid,lastDate}
+let _recentPricesCache = null;  // 품목명 → 최근 단가 배열 (getRecentPrices 캐시)
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  § 1  유틸리티                                                   ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+function _loadJSON(key) {
+    try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : null; } catch(e) { return null; }
 }
+
+function _uid() {
+    return Date.now().toString(36) + Math.random().toString(36).slice(2,7);
+}
+
+function todayKST() {
+    // 항상 UTC+9(KST) 기준 날짜 반환 — 기기 시간대와 무관하게 정확
+    const d = new Date();
+    return new Date(d.getTime() + 9 * 60 * 60 * 1000).toISOString().slice(0, 10);
+}
+
+// 재고 이력을 어제·오늘(이틀)만 보관하고 그 이전 이력 삭제
+// — 재고 이월 계산은 어제 기준이므로 이틀이면 충분
+function _trimLogByDate(log) {
+    if (!Array.isArray(log)) return [];
+    const yesterday = kstAddDays(todayKST(), -1);  // 어제 ~ 오늘만 유지
+    return log.filter(l => {
+        const d = l.date || (l.at ? l.at.slice(0, 10) : null);
+        return d && d >= yesterday;
+    });
+}
+
+// KST 기준 현재 날짜+시각 반환
+// dateStr: 'YYYY-MM-DD HH:MM' (화면 표시용)
+// key:     'YYYY-MM-DDTHH-MM-SS' (Firebase 정렬키용, 특수문자 제거)
+
+function nowKST() {
+    const kstIso = new Date(Date.now() + 9 * 60 * 60 * 1000).toISOString();
+    const dateStr = kstIso.slice(0, 16).replace('T', ' ');   // 'YYYY-MM-DD HH:MM'
+    const key     = kstIso.slice(0, 19).replace(/[:.]/g, '-'); // 'YYYY-MM-DDTHH-MM-SS'
+    return { dateStr, key };
+}
+
+// KST 날짜 문자열(YYYY-MM-DD)에 days를 더해 새 날짜 문자열 반환
+
+function kstAddDays(dateStr, days) {
+    // +09:00으로 파싱하면 UTC로 변환되므로, 다시 +9h 오프셋을 더해 KST 날짜 추출
+    const utcMs = Date.parse(dateStr + 'T00:00:00+09:00') + days * 86400000;
+    return new Date(utcMs + 9 * 3600000).toISOString().slice(0, 10);
+}
+
+// KST 기준으로 n개월 전 날짜 문자열 반환 (new Date() UTC 오프셋 버그 방지)
+function _kstMonthsAgo(n) {
+    let [y, m, d] = todayKST().split('-').map(Number);
+    m -= n;
+    while (m <= 0) { m += 12; y--; }
+    const maxDay = new Date(y, m, 0).getDate();
+    d = Math.min(d, maxDay);
+    return `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
+}
+
+function fmt(n) {
+    const v = Number(n);
+    return isNaN(v) ? '0' : v.toLocaleString('ko-KR');
+}
+
+// 전표의 실제 수령액 반환 (할인 완납 시 paidAmount = 실수령액, total - discount)
+// 완납이어도 할인이 있으면 paidAmount를 우선 사용
+function _actualPaid(o) {
+    if (!o.isPaid) return Math.min(o.total, o.paidAmount || 0);
+    // 할인 완납: paidAmount = 실수령액 (total보다 작음)
+    if (o.discount > 0 && o.paidAmount != null) return o.paidAmount;
+    return o.total;
+}
+
+// 안정적 hash: 객체 키 삽입 순서에 무관하게 동일한 결과 보장
+function dataHash(v) {
+    return JSON.stringify(v, (_, val) =>
+        (val && typeof val === 'object' && !Array.isArray(val))
+            ? Object.keys(val).sort().reduce((acc, k) => { acc[k] = val[k]; return acc; }, {})
+            : val
+    );
+}
+
+function toArray(v) {
+    if (!v) return [];
+    if (Array.isArray(v)) return v;
+    return Object.values(v);
+}
+
+function debounce(fn, ms) {
+    let t;
+    const f = (...a) => { clearTimeout(t); t = setTimeout(()=>fn(...a), ms); };
+    f.cancel = () => { clearTimeout(t); t = null; };
+    return f;
+}
+
+// ─── HTML 이스케이프 (XSS 방지) ───
+
+function escapeHtml(str) {
+    if (!str && str !== 0) return '';
+    return String(str)
+        .replace(/&/g,'&amp;')
+        .replace(/</g,'&lt;')
+        .replace(/>/g,'&gt;')
+        .replace(/"/g,'&quot;')
+        .replace(/'/g,'&#39;');
+}
+
+// onclick 속성 내 작은따옴표+큰따옴표 이스케이프
+
+function escapeAttr(str) {
+    return String(str||'').replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/"/g,'&quot;');
+}
+
+// 초성 검색
+const CHO = ['ㄱ','ㄲ','ㄴ','ㄷ','ㄸ','ㄹ','ㅁ','ㅂ','ㅃ','ㅅ','ㅆ','ㅇ','ㅈ','ㅉ','ㅊ','ㅋ','ㅌ','ㅍ','ㅎ'];
+
+function extractChosung(str) {
+    return [...str].map(c => {
+        const code = c.charCodeAt(0) - 44032;
+        return code>=0 && code<11172 ? CHO[Math.floor(code/588)] : c;
+    }).join('');
+}
+
+function matchSearch(target, q) {
+    if (!q) return true;
+    const t = target.toLowerCase(), query = q.toLowerCase();
+    // 일반 문자열 포함 검색
+    if (t.includes(query)) return true;
+    // 초성 검색: 쿼리가 순수 자음(초성)으로만 이루어진 경우에만 적용
+    // 예) 'ㅂㄹ' → 초성 검색 O / '벨렘' → 일반 검색만 O (초성 혼합 방지)
+    const isChoOnly = /^[ㄱ-ㅎ]+$/.test(q);
+    if (isChoOnly) {
+        const tCho = extractChosung(target);
+        if (tCho.includes(q)) return true;
+    }
+    return false;
+}
+
+// ─── 함수 래퍼 (monkey-patch 안전화) ───
+// fn이 존재하는 함수일 때만 래핑 → 정의 순서 무관하게 안전
+function _safeWrap(fn, extra) {
+    if (typeof fn !== 'function') { console.warn('_safeWrap: 대상 함수를 찾을 수 없습니다'); return fn || (() => {}); }
+    return function(...args) { const r = fn.apply(this, args); extra.apply(this, args); return r; };
+}
+
+// ─── 커스텀 confirm 다이얼로그 (Promise 기반) ───
+// 사용법: if (!await customConfirm('삭제할까요?')) return;
+// okLabel: 확인 버튼 텍스트 / okClass: 버튼 CSS 클래스 (btn-danger|btn-primary)
+function customConfirm(msg, okLabel = '확인', okClass = 'btn-danger') {
+    return new Promise(resolve => {
+        const modal     = document.getElementById('customConfirmModal');
+        const msgEl     = document.getElementById('customConfirmMsg');
+        const okBtn     = document.getElementById('customConfirmOkBtn');
+        const cancelBtn = document.getElementById('customConfirmCancelBtn');
+        if (!modal) { resolve(window.confirm(msg)); return; } // fallback
+        msgEl.textContent = msg;
+        okBtn.textContent = okLabel;
+        okBtn.className   = `btn ${okClass}`;
+        okBtn.style.flex  = '2';
+        const cleanup = (val) => { closeModal('customConfirmModal'); resolve(val); };
+        okBtn.onclick     = () => cleanup(true);
+        cancelBtn.onclick = () => cleanup(false);
+        openModal('customConfirmModal');
+    });
+}
+
+// ─── 로컬 저장 (스마트 모드) ───
+// Firebase 연결 중이거나 워크스페이스 ID가 설정된 경우: 경량 저장 (용량 최소화)
+// 순수 오프라인(워크스페이스 ID 없음): 전체 저장
+// Firebase 업로드(debouncedSync)는 항상 전체 데이터 사용 (별도 경로)
+
+// ╔══════════════════════════════════════════════════════════════╗
+// ║  § 2  성능 캐시 빌드                                               ║
+// ╚══════════════════════════════════════════════════════════════╝
+
+function invalidateOrdersCache() {
+    _itemNamesCache    = null;
+    _clientItemsCache  = null;
+    _clientStatsCache  = null;
+    _recentPricesCache = null;
+}
+
+function _buildClientStatsCache() {
+    if (_clientStatsCache) return _clientStatsCache;
+    const m = {};
+    for (const o of orders) {
+        const key = o.clientId || o.clientName;
+        if (!m[key]) m[key] = { count:0, total:0, unpaid:0, lastDate:'' };
+        m[key].count++;
+        m[key].total += o.total;
+        if (!o.isPaid) m[key].unpaid += Math.max(0, (o.total - (o.paidAmount||0)));
+        if (o.date > m[key].lastDate) m[key].lastDate = o.date;
+    }
+    _clientStatsCache = m;
+    return m;
+}
+
+function _buildItemNamesCache() {
+    if (_itemNamesCache) return _itemNamesCache;
+    const all = new Set();
+    for (const o of orders) for (const it of (o.items||[])) if (it.name) all.add(it.name);
+    _itemNamesCache = [...all].sort();
+    return _itemNamesCache;
+}
+
+function _buildClientItemsCache() {
+    if (_clientItemsCache) return _clientItemsCache;
+    // clientId → 날짜 내림차순으로 품목명 첫 등장만 수집
+    // clientId 없는 전표는 clientName을 fallback 키로 사용
+    const tmp = {}; // key → [{name,price,date}]
+    const sorted = [...orders].sort((a,b) => (b.date||"").localeCompare(a.date||""));
+    for (const o of sorted) {
+        const cid = o.clientId || ('name:' + (o.clientName || ''));
+        if (!cid) continue;
+        if (!tmp[cid]) tmp[cid] = { seen:{}, list:[] };
+        for (const it of (o.items||[])) {
+            if (!tmp[cid].seen[it.name]) {
+                tmp[cid].seen[it.name] = true;
+                tmp[cid].list.push({ name:it.name, price:it.price, date:o.date });
+            }
+        }
+    }
+    _clientItemsCache = {};
+    for (const cid in tmp) _clientItemsCache[cid] = tmp[cid].list.slice(0, 10);
+    return _clientItemsCache;
+}
+
+let histPayFilter = 'all';
+let histSortMode  = 'date'; // 'date' | 'client' | 'recent'
+let settleFilter  = 'all';
+let settleListVisible = false;  // 기본값 숨기기
+let settleUnit = 'monthly'; // 'monthly' | 'daily' | 'quarterly'
+let clientListVisible = false;  // 기본값 숨기기 (복구/동기화 후 즉시 반영)
+let showHiddenClients = false; // 숨긴 거래처 포함 표시 여부
+
+
+// Firebase
+let workspaceRef = null;
+let isConnected  = false;
+let _initialLoadDone = false;  // 전역 선언 — _fbValueHandler에서 접근 가능
+const SESSION_ID = Math.random().toString(36).slice(2);
+let lastHash = { clients:'', orders:'', prices:'', stock:'' };
+
+// ─── Delta sync 트래킹 ───
+// 변경된 order id만 추적 → debouncedSync에서 건별 업로드 (payload 최소화)
+const _dirtyOrders   = new Set(); // 변경/추가된 order id
+const _deletedOrders = new Set(); // 삭제된 order id
+function _markDirtyOrder(id) {
+    _dirtyOrders.add(String(id));
+    _deletedOrders.delete(String(id));
+    // ★ 수정 전표 updatedAt 자동 갱신 (Firebase 충돌 판단 기준)
+    const o = orders.find(x => String(x.id) === String(id));
+    if (o && !o._skipUpdatedAt) o.updatedAt = new Date().toISOString();
+}
+function _markDeletedOrder(id) { _deletedOrders.add(String(id)); _dirtyOrders.delete(String(id)); }
+function _clearOrderDelta()    { _dirtyOrders.clear(); _deletedOrders.clear(); }
+
+// ─── 동기화 가드 플래그 ───
+// _syncGuard: debouncedSync 업로드가 진행 중일 때 true
+//   → 리스너가 업로드 응답 echo를 받아 로컬 데이터를 덮어쓰는 것을 차단
+let _syncGuard = false;
+let _pendingFbSnap = null;   // _syncGuard 중 도착한 타기기 변경 스냅샷 (처리 보류)
+let _rtPollTimer   = null;   // 실시간 폴링 백업 타이머
+// _connectGuard: _doConnect의 초기 .get() 처리가 완료되기 전 true
+//   → .on() 리스너가 먼저 실행되는 레이스 컨디션 방지
+let _connectGuard = false;
+
+// ─── Firebase 데이터 정규화 헬퍼 ───
+// Firebase에서 받은 raw 데이터를 앱 내부 포맷으로 변환 (4곳 공통 사용)
+function _normClientFromFb(c) {
+    if (!c.id) c.id = _uid();
+    c.id = String(c.id);
+    if (!c.note && c.memo) c.note = c.memo; // 구버전 백업 호환
+    if (!c.note) c.note = '';
+    if (c.isHidden === undefined) c.isHidden = false;
+    return c;
+}
+function _normOrderFromFb(o) {
+    if (!o.id) o.id = _uid();
+    o.id = String(o.id);
+    o.total = Number(o.total ?? o.totalAmount ?? 0);
+    if (!o.clientName && o.client) o.clientName = o.client;
+    if (!Array.isArray(o.items)) o.items = [];
+    if (!o.note && o.memo) o.note = o.memo; // 구버전 백업 호환
+    if (!o.note) o.note = '';
+    // isVoid: Firebase에서 undefined로 오면 명시적으로 false 처리
+    if (!o.isVoid) o.isVoid = false;
+    // date: undefined이면 startsWith() 호출 시 TypeError 방지
+    if (!o.date) o.date = '';
+    // ★ CRM 우선권: crmControlled 플래그 유지
+    if (o.crmControlled) o.crmControlled = true;
+    return o;
+}
+
+// ─── Firebase 실시간 리스너 핸들러 (workspaceRef.on('value', ...) 공용) ───
+function _fbValueHandler(snap) {
+    try {
+        const d = snap.val();
+        if (!d) return;
+        if (!_initialLoadDone) return;  // 초기 .get() 처리 전 차단
+        if (_connectGuard)     return;  // 초기 연결 중 레이스 컨디션 차단
+        if (d.writtenBy === SESSION_ID) return; // 자기 자신이 올린 echo 차단
+
+        // ★ version 기반 충돌 감지: 서버 version이 로컬보다 낮으면 stale 수신 무시
+        // 단, CRM/공유납품 경로의 writtenBy가 있는 경우 version 체크 완전 우회
+        // → 이들은 자체 우선권 로직(CRM_EXTERNAL, __shared_by__)으로 처리됨
+        const _isCrmOrShared = typeof d.writtenBy === 'string' &&
+            (d.writtenBy === 'CRM_EXTERNAL' || d.writtenBy.startsWith('__shared_by__:'));
+        if (d.version && !_isCrmOrShared) {
+            const localVer = parseInt(localStorage.getItem('ws_version') || '0', 10);
+            if (d.version < localVer) {
+                console.info('[충돌감지] 서버 version이 로컬보다 낮음 — 수신 무시',
+                    'server:', d.version, 'local:', localVer);
+                return;
+            }
+            // 수신 성공 시 로컬 version 갱신
+            localStorage.setItem('ws_version', String(d.version));
+        }
+
+        // ★ v96: B가 공유 납품 저장 시 writtenBy = "__shared_by__:{B의 SESSION_ID}"
+        // → A 화면에서 즉시 orders만 갱신 (타임스탬프 비교 우회)
+        if (typeof d.writtenBy === 'string' && d.writtenBy.startsWith('__shared_by__:')) {
+            if (d.orders) {
+                const inc = toArray(d.orders).map(_normOrderFromFb);
+                const h = dataHash(inc);
+                if (h !== lastHash.orders) {
+                    orders = inc;
+                    lastHash.orders = h;
+                    saveToLocal();
+                    _fullRender();
+                    setSyncStatus('online');
+                    toast('📦 공유 납품이 등록됐습니다', 'var(--accent)', 2500);
+                }
+            }
+            return;
+        }
+
+        // ★ CRM 외부에서 결제 패치한 경우: 타임스탬프 비교 우회 + orders만 즉시 갱신
+        if (d.writtenBy === 'CRM_EXTERNAL') {
+            if (d.orders) {
+                const inc = toArray(d.orders).map(_normOrderFromFb);
+                const h = dataHash(inc);
+                if (h !== lastHash.orders) {
+                    orders = inc;
+                    lastHash.orders = h;
+                    saveToLocal();
+                    _fullRender();
+                    setSyncStatus('online');
+                    toast('💳 CRM에서 결제 처리됨 — 화면이 업데이트됐습니다', 'var(--green)', 3000);
+                }
+            }
+            return;
+        }
+
+        // ★ _syncGuard 중 도착한 타기기 변경 → 버리지 않고 보류, 업로드 완료 후 처리
+        if (_syncGuard) { _pendingFbSnap = snap; return; }
+
+        // ★ writtenBy가 명시된 경우(현행 앱): 다른 세션이면 무조건 수락
+        //   writtenBy 없는 구버전 데이터만 timestamp 비교로 stale 여부 판단
+        //   (이 체크를 제거하지 않으면 기기 간 시계 오차로 결제 변경이 차단됨)
+        if (!d.writtenBy) {
+            const serverUpdatedAt = d.lastUpdated ? new Date(d.lastUpdated).getTime() : 0;
+            const lastLocalMs = (() => {
+                const s = localStorage.getItem('lastLocalUpdated');
+                return s ? new Date(s).getTime() : 0;
+            })();
+            const localWriteMs = Math.max(_localWriteTime, lastLocalMs);
+            const RECENT_WINDOW_MS = 8_000;
+            if (localWriteMs > 0 && localWriteMs >= serverUpdatedAt &&
+                (Date.now() - localWriteMs) < RECENT_WINDOW_MS) return;
+        }
+
+        let changed = false;
+        if (d.clients) {
+            const inc = toArray(d.clients).map(_normClientFromFb);
+            const h = dataHash(inc);
+            if (h !== lastHash.clients) { clients = inc; lastHash.clients = h; changed = true; }
+        }
+        if (d.orders) {
+            const inc = toArray(d.orders).map(_normOrderFromFb);
+            const h = dataHash(inc);
+            if (h !== lastHash.orders) { orders = inc; lastHash.orders = h; changed = true; }
+        }
+        if (d.prices) {
+            const h = dataHash(d.prices);
+            if (h !== lastHash.prices) { prices = d.prices; lastHash.prices = h; }
+        }
+        if (d.stockItems) {
+            const inc = toArray(d.stockItems).map(normStock);
+            const h = dataHash(inc);
+            if (h !== lastHash.stock) { stockItems = inc; lastHash.stock = h; changed = true; }
+        }
+        if (changed) {
+            saveToLocal();
+            _fullRender();
+            setSyncStatus('online');
+            toast('🔄 다른 기기에서 변경된 내용이 반영됐습니다', 'var(--accent)', 2500);
+        }
+    } catch(e) {
+        console.error('[_fbValueHandler] 처리 중 오류:', e);
+        // 오류가 발생해도 리스너는 유지됨 — 다음 이벤트에서 재시도
+    }
+}
+let _localWriteTime = 0; // 로컬 변경 시각 — Firebase 리스너 경쟁 방지용
+let backupDirHandle = null;  // File System Access API 디렉토리 핸들
+
