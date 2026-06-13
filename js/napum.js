@@ -2,17 +2,21 @@
 // localStorage key: crm_napum_workspaces → [{id, label, lastSync, syncedCount}]
 // localStorage key: crm_napum_synced     → ["wsId:orderId", ...]  (중복 방지)
 
-function _getWorkspaces()      { return lsGet('crm_napum_workspaces', []); }
-function _saveWorkspaces(ws)   { lsSet('crm_napum_workspaces', ws); }
+function _getWorkspaces()    { return lsGet('crm_napum_workspaces', []); }
+function _saveWorkspaces(ws) { lsSet('crm_napum_workspaces', ws); }
 
-// ── 납품앱 Firebase Named Instance 확보 ──────────────────────────────────────
+// ── 납품 앱 Firebase Named Instance 확보 ─────────────────────────────────────
 function _getNapumApp() {
   try { return firebase.app('napum'); }
   catch (e) { return firebase.initializeApp(NAPUM_FB_CFG, 'napum'); }
 }
 
 // ── 납품 역방향 패치 ─────────────────────────────────────────────────────────
-/** CRM 결제 처리 후 → 납품 관리 Firebase의 order 결제 필드 동기화 */
+/**
+ * CRM 결제 처리 후 → 납품 관리 Firebase의 order 결제 필드 동기화
+ * order 패치와 workspace 루트 writtenBy를 단일 update()로 원자적 처리.
+ * (분리 시 납품 앱이 writtenBy 없는 스냅샷을 먼저 수신해 타임스탬프 필터에 막힐 수 있음)
+ */
 async function _patchNapumOrder(napumKey, patchObj) {
   if (!napumKey || !napumKey.includes(':')) return false;
   const sep     = napumKey.lastIndexOf(':');
@@ -26,18 +30,16 @@ async function _patchNapumOrder(napumKey, patchObj) {
     const ref     = napumDb.ref(`workspaces/${wsId}/orders/${orderId}`);
     const snap    = await ref.once('value');
     if (!snap.exists()) {
-      console.warn('납품앱 order 없음:', wsId, orderId);
+      console.warn('납품 앱 order 없음:', wsId, orderId);
       return true; // CRM은 이미 반영됨
     }
-    // order 패치 + workspace 루트 writtenBy를 단일 update()로 원자적 처리
-    // (분리 시 납품앱이 writtenBy 없는 스냅샷을 먼저 수신해 타임스탬프 필터에 막힐 수 있음)
     const atomicPatch = {};
     Object.keys(patchObj).forEach(k => {
       atomicPatch[`workspaces/${wsId}/orders/${orderId}/${k}`] = patchObj[k];
     });
-    atomicPatch[`workspaces/${wsId}/writtenBy`]    = 'CRM_EXTERNAL';
-    atomicPatch[`workspaces/${wsId}/lastUpdated`]  = new Date(Date.now() + 1500).toISOString();
-    atomicPatch[`workspaces/${wsId}/_crmPatchAt`]  = new Date().toISOString();
+    atomicPatch[`workspaces/${wsId}/writtenBy`]   = 'CRM_EXTERNAL';
+    atomicPatch[`workspaces/${wsId}/lastUpdated`] = new Date(Date.now() + 1500).toISOString();
+    atomicPatch[`workspaces/${wsId}/_crmPatchAt`] = new Date().toISOString();
     await napumDb.ref('/').update(atomicPatch);
     console.info('납품 역방향 패치 성공:', napumKey, patchObj);
     return true;
@@ -52,19 +54,18 @@ function _buildNapumPatch(crmTx) {
   const patch = {
     isPaid,
     paidAmount:    crmTx.paidAmount || 0,
-    // 미수금 복귀 시 null로 명시 — || 연산자로 현재 시각이 채워지는 것을 방지
     paidAt:        isPaid ? (crmTx.paidAt || new Date().toISOString()) : null,
     paidMethod:    isPaid ? (crmTx.paidMethod || 'cash') : null,
     updatedAt:     new Date().toISOString(),
-    crmControlled: true,  // ★ CRM 우선권 플래그 — 납품 앱이 이 필드들을 덮어쓰지 않음
+    crmControlled: true, // ★ CRM 우선권 플래그 — 납품 앱이 이 필드들을 덮어쓰지 않음
   };
   if (isPaid && crmTx.paidMethodDetail) patch.paidMethodDetail = crmTx.paidMethodDetail;
   else patch.paidMethodDetail = null; // 미수금 복귀 시 명시적 삭제
   return patch;
 }
 
-// ── 납품앱 실시간 리스너 ─────────────────────────────────────────────────────
-const _napumListeners = {}; // wsId → { clientsRef, clientsCb, ordersRef, ordersCb }
+// ── 납품 앱 실시간 리스너 ────────────────────────────────────────────────────
+const _napumListeners = {}; // wsId → { clientsRef, clientsCb, sharedClientsRef, sharedClientsCb, ordersRef, ordersCb }
 
 async function attachNapumListeners() {
   const workspaces = _getWorkspaces();
@@ -89,16 +90,16 @@ async function attachNapumListeners() {
   for (const ws of workspaces) {
     if (_napumListeners[ws.id]) continue;
 
-    // ★ 비동기 시작 전 즉시 마커 설정 (중복 등록 방지)
+    // 비동기 시작 전 즉시 마커 설정 (중복 등록 방지)
     _napumListeners[ws.id] = { _pending: true };
 
     const wsRef = napumDb.ref('workspaces/' + ws.id);
     let _napumClientsCache = {};
 
-    const clientsRef     = wsRef.child('clients');
-    const clientsCb      = snap => { _napumClientsCache = snap.val() || {}; };
+    const clientsRef = wsRef.child('clients');
+    const clientsCb  = snap => { _napumClientsCache = snap.val() || {}; };
 
-    // sharedClients
+    // sharedClients 실시간 캐시
     let _sharedClientsCache = [];
     const sharedClientsRef = wsRef.child('sharedClients');
     const sharedClientsCb  = sc => {
@@ -119,8 +120,12 @@ async function attachNapumListeners() {
         };
         ordersRef.on('value', ordersCb, e => console.warn('납품 orders 리스너:', e));
 
-        // ★ 마커 → 실제 핸들러로 교체
-        _napumListeners[ws.id] = { clientsRef, clientsCb, sharedClientsRef, sharedClientsCb, ordersRef, ordersCb };
+        // 마커 → 실제 핸들러로 교체
+        _napumListeners[ws.id] = {
+          clientsRef, clientsCb,
+          sharedClientsRef, sharedClientsCb,
+          ordersRef, ordersCb,
+        };
         console.info('[납품 실시간] 리스너 등록 완료:', ws.label, ws.id,
           '| 거래처', Object.keys(_napumClientsCache).length, '명');
       })
@@ -139,7 +144,6 @@ function _reattachNapumListenersIfNeeded(force = false) {
   if (!workspaces.length) return;
 
   if (force) {
-    // 전체 리스너 해제 후 재연결
     detachNapumListeners();
     console.info('[납품] 강제 재연결');
     attachNapumListeners().catch(e => console.warn('[납품] 재연결 실패:', e));
@@ -179,24 +183,23 @@ function detachNapumListeners() {
   }
 }
 
-/** 납품앱 orders 스냅샷을 받아 CRM에 반영
- *  allowed: 이 워크스페이스가 공개 허용한 거래처명 배열 (빈 배열 = 공개 없음)
+/**
+ * 납품 앱 orders 스냅샷을 받아 CRM에 반영
+ * allowed: 이 워크스페이스가 공개 허용한 거래처명 배열 (빈 배열 = 공개 없음)
  */
 function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = []) {
-  // allowed가 비어있으면 이 워크스페이스는 아무것도 공개하지 않은 것
-  // → 단, CRM에 직접 등록한 워크스페이스(자기 자신)는 필터 없이 전체 허용
-  const isSelfWs = _getWorkspaces().some(w => w.id === ws.id);
-  // ※ 자기 워크스페이스(isSelfWs)는 sharedClients 필터 적용 안 함
-  //    (납품앱에서 "공개 거래처"는 다른 사람 CRM이 볼 수 있는 항목일 뿐,
-  //     내 CRM 동기화에는 항상 전체 거래처/주문이 실시간 반영되어야 함)
-  const useFilter = !isSelfWs;
+  // ★ 핵심: 자기 워크스페이스(isSelfWs)는 sharedClients 필터 적용 안 함
+  //   sharedClients는 "다른 사람 CRM에게 공개할 항목" 목록일 뿐,
+  //   내 CRM 동기화 범위와는 무관 → 자기 ws는 항상 전체 거래처/주문 허용
+  const isSelfWs   = _getWorkspaces().some(w => w.id === ws.id);
+  const useFilter  = !isSelfWs; // 자기 ws → 필터 OFF, 외부 ws → 필터 ON
   const allowedSet = new Set(allowed);
 
-  const orders       = Object.values(ordersObj)
+  const orders = Object.values(ordersObj)
     .filter(o => {
-      if (!useFilter) return true;           // 자기 워크스페이스 + 공개 없음 = 전체 허용
-      if (!isSelfWs && allowed.length === 0) return false; // 외부 ws + 공개 없음 = 전부 차단
-      return allowedSet.has(o.clientName);   // 허용된 거래처만
+      if (!useFilter) return true;                              // 자기 ws → 전체 허용
+      if (!isSelfWs && allowed.length === 0) return false;     // 외부 ws + 공개 없음 → 전부 차단
+      return allowedSet.has(o.clientName);                     // 외부 ws → 허용된 거래처만
     });
   const napumClients = Object.values(napumClientsObj)
     .filter(nc => {
@@ -204,7 +207,7 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
       if (!isSelfWs && allowed.length === 0) return false;
       return allowedSet.has(nc.name);
     });
-  // napumClient id → 객체 맵
+
   const napumClientById = {};
   napumClients.forEach(nc => { if (nc.id != null) napumClientById[String(nc.id)] = nc; });
 
@@ -215,7 +218,7 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
   const synced  = new Set(lsGet('crm_napum_synced', []));
   let changed   = false;
 
-  // ── 1단계: 거래처 자동 추가 (clients 목록 기반) ───────────────────────────
+  // ── 1단계: 거래처 자동 추가 (clients 목록 기반) ──────────────────────────
   napumClients.forEach(nc => {
     if (!nc.name || nc.isHidden) return;
     if (!nameToId[nc.name]) {
@@ -242,7 +245,7 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
     }
   });
 
-  // ── 2단계: orders에 등장하는 미등록 거래처 추가 ───────────────────────────
+  // ── 2단계: orders에 등장하는 미등록 거래처 추가 ─────────────────────────
   orders.forEach(o => {
     const nc      = napumClientById[String(o.clientId)];
     const crmName = o.clientName || nc?.name || '';
@@ -258,7 +261,7 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
     console.info('[실시간] orders에서 거래처 자동 추가:', crmName, ws.label);
   });
 
-  // ── 3단계: 주문 처리 ─────────────────────────────────────────────────────
+  // ── 3단계: 주문 처리 (누락 없이 전체 반영) ──────────────────────────────
   orders.forEach(o => {
     if (!o.date || !o.total) return;
     const nc          = napumClientById[String(o.clientId)];
@@ -276,13 +279,14 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
     const napumKey  = `${ws.id}:${o.id}`;
 
     if (napumIdToCrmId[napumKey]) {
+      // 기존 거래 업데이트
       S.transactions = S.transactions.map(t => {
         if (t.id !== napumIdToCrmId[napumKey]) return t;
         const prev = JSON.stringify(t);
         const next = { ...t, status, amount, tax: 0, memo };
-        if (o.items && o.items.length)  next.items            = o.items; else delete next.items;
-        if (o.paidAmount)               next.paidAmount       = o.paidAmount; else delete next.paidAmount;
-        // 완납→미수 복귀 시 명시적으로 삭제 (truthy 체크만 하면 이전값이 스프레드로 잔류)
+        if (o.items && o.items.length)  next.items            = o.items;            else delete next.items;
+        if (o.paidAmount)               next.paidAmount       = o.paidAmount;       else delete next.paidAmount;
+        // 완납→미수 복귀 시 명시적으로 삭제
         if (o.paidAt)                   next.paidAt           = o.paidAt;           else delete next.paidAt;
         if (o.paidMethod)               next.paidMethod       = o.paidMethod;       else delete next.paidMethod;
         if (o.paidMethodDetail)         next.paidMethodDetail = o.paidMethodDetail; else delete next.paidMethodDetail;
@@ -290,6 +294,7 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
         return next;
       });
     } else {
+      // 신규 거래 추가 (중복 방지)
       const alreadyExists = S.transactions.some(t => t._napumId === napumKey);
       if (!alreadyExists) {
         const newT = {
@@ -327,11 +332,10 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
 }
 
 // ── 동기화 모달 ───────────────────────────────────────────────────────────────
-function openSyncModal()  {
-  M.syncModal = { step:'idle', newInput:'', newLabel:'', result:null, error:null, progress:null };
+function openSyncModal() {
+  M.syncModal = { step: 'idle', newInput: '', newLabel: '', result: null, error: null, progress: null };
   _pushModalHistory();
   renderModals();
-  // Firebase 준비되면 공개 거래처 뱃지 로드
   if (typeof firebase !== 'undefined') setTimeout(_loadScBadges, 300);
 }
 function closeSyncModal() { M.syncModal = null; renderModals(); }
@@ -348,14 +352,14 @@ async function _loadScBadges() {
       const snap = await napumDb.ref(`workspaces/${w.id}/sharedClients`).get();
       const list = snap.exists() ? (snap.val() || []) : [];
       if (!list.length) {
-        el.textContent = '⚠️ 공개 거래처 없음 (납품앱에서 설정 필요)';
+        el.textContent = '⚠️ 공개 거래처 없음 (납품 앱에서 설정 필요)';
         el.style.color = '#f59e0b';
       } else {
         el.innerHTML = '🔓 공개: ' + list.map(n =>
           `<span style="background:#e0e7ff;color:#4f46e5;border-radius:4px;padding:1px 5px;font-size:10px;margin-right:2px;">${esc(n)}</span>`
         ).join('');
       }
-    } catch(e) {
+    } catch (e) {
       el.textContent = '❌ 접근 불가';
       el.style.color = '#dc2626';
     }
@@ -363,7 +367,7 @@ async function _loadScBadges() {
 }
 
 function syncAddWorkspace() {
-  const sm = M.syncModal;
+  const sm    = M.syncModal;
   const id    = (sm.newInput || '').trim();
   const label = (sm.newLabel || '').trim();
   if (!id) { showToast('워크스페이스 ID를 입력하세요.'); return; }
@@ -386,7 +390,7 @@ async function doSyncFromDelivery() {
   const workspaces = _getWorkspaces();
   if (!workspaces.length) { showToast('워크스페이스를 먼저 추가하세요.'); return; }
 
-  M.syncModal = { ...sm, step:'loading', error:null, progress:{ current:0, total:workspaces.length, label:'Firebase 초기화 중...' } };
+  M.syncModal = { ...sm, step: 'loading', error: null, progress: { current: 0, total: workspaces.length, label: 'Firebase 초기화 중...' } };
   renderModals();
 
   try {
@@ -395,10 +399,10 @@ async function doSyncFromDelivery() {
       if (!_fbReady) throw new Error('Firebase SDK 로드 실패. 네트워크를 확인해주세요.');
     }
 
-    const napumDb      = _getNapumApp().database();
-    const nameToId     = {};
+    const napumDb        = _getNapumApp().database();
+    const nameToId       = {};
     S.clients.forEach(c => { nameToId[c.name] = c.id; });
-    const synced       = new Set(lsGet('crm_napum_synced', []));
+    const synced         = new Set(lsGet('crm_napum_synced', []));
     const napumIdToCrmId = {};
     S.transactions.forEach(t => { if (t._napumId) napumIdToCrmId[t._napumId] = t.id; });
 
@@ -408,7 +412,7 @@ async function doSyncFromDelivery() {
 
     for (let i = 0; i < workspaces.length; i++) {
       const ws = workspaces[i];
-      M.syncModal = { ...M.syncModal, progress:{ current:i + 1, total:workspaces.length, label:`"${ws.label}" 읽는 중...` } };
+      M.syncModal = { ...M.syncModal, progress: { current: i + 1, total: workspaces.length, label: `"${ws.label}" 읽는 중...` } };
       renderModals();
 
       let wsNewClients = 0, wsNewTx = 0, wsUpdTx = 0;
@@ -420,18 +424,15 @@ async function doSyncFromDelivery() {
           wsRef.child('sharedClients').get(),
         ]);
 
-        // 이 워크스페이스가 공개 허용한 거래처 목록
         const allowedClients = scSnap.exists() ? (scSnap.val() || []) : [];
         const allowedSet     = new Set(allowedClients);
-        // CRM에 직접 등록한 자기 워크스페이스는 전체 허용, 공유로 받은 ws는 필터 적용
-        const isSelfWs   = true; // doSync는 항상 자기가 등록한 ws만 처리
-        // ※ 자기 워크스페이스는 sharedClients(공개 허용 목록) 필터를 적용하지 않음
-        //    (해당 목록은 다른 사람 CRM에게 노출할 항목일 뿐, 내 CRM 동기화 범위와는 무관)
-        const useFilter  = false;
+        // ★ doSync는 항상 자기가 등록한 ws만 처리 → 필터 OFF (전체 허용)
+        //   sharedClients는 외부 CRM에게 공개할 목록일 뿐, 내 동기화 범위와 무관
+        const useFilter      = false;
 
         if (!csSnap.exists() && !ordSnap.exists()) {
-          perWorkspace.push({ ...ws, error:true, newTx:0 });
-          wsListUpdated[i] = { ...ws, lastSync:'ID 없음', syncedCount:0 };
+          perWorkspace.push({ ...ws, error: true, newTx: 0 });
+          wsListUpdated[i] = { ...ws, lastSync: 'ID 없음', syncedCount: 0 };
           continue;
         }
 
@@ -441,11 +442,10 @@ async function doSyncFromDelivery() {
         const napumOrders     = Object.values(ordSnap.val() || {})
           .filter(o  => !useFilter || allowedSet.has(o.clientName));
 
-        // napumClient id → 객체 맵 (order.clientId 매핑용)
         const napumClientById = {};
         napumClients.forEach(nc => { if (nc.id != null) napumClientById[String(nc.id)] = nc; });
 
-        // ── 1단계: 거래처 병합 (orders 처리 전에 반드시 완료) ──────────────────
+        // ── 1단계: 거래처 병합 (orders 처리 전에 반드시 완료) ────────────────
         napumClients.forEach(nc => {
           if (!nc.name || nc.isHidden) return;
           if (!nameToId[nc.name]) {
@@ -465,19 +465,17 @@ async function doSyncFromDelivery() {
               if (nc.phone   && !c.phone)   next.phone   = nc.phone;
               if (nc.address && !c.address) next.address = nc.address;
               if (!c._wsId) next._wsId = ws.id;
-                    return next;
+              return next;
             });
           }
         });
 
-        // ── 2단계: orders에 등장하는 거래처 중 아직 미등록인 것 추가 ─────────
-        // order.clientName 또는 order.clientId → napumClient.name 으로 추출
+        // ── 2단계: orders에 등장하는 미등록 거래처 추가 ─────────────────────
         napumOrders.forEach(o => {
           const nc      = napumClientById[String(o.clientId)];
           const crmName = o.clientName || nc?.name || '';
           if (!crmName) return;
           if (!nameToId[crmName]) {
-            // orders에는 있지만 clients 목록에 없는 케이스 (삭제된 거래처 등)
             const newC = {
               id: nextId(S.clients), name: crmName, bizNo: '', rep: '', email: '',
               phone: nc?.phone || '', address: nc?.address || '', type: '매출처',
@@ -490,11 +488,11 @@ async function doSyncFromDelivery() {
           }
         });
 
-        // ── 3단계: 거래 처리 ─────────────────────────────────────────────────
+        // ── 3단계: 거래 처리 (누락 없이 전체 반영) ──────────────────────────
         napumOrders.forEach(o => {
           if (!o.date || !o.total) return;
-          const nc      = napumClientById[String(o.clientId)];
-          const crmName = o.clientName || nc?.name || '';
+          const nc          = napumClientById[String(o.clientId)];
+          const crmName     = o.clientName || nc?.name || '';
           const crmClientId = nameToId[crmName];
           if (!crmClientId) {
             console.warn('[동기화] 거래처 매핑 실패 → 건너뜀', { orderId: o.id, clientId: o.clientId, crmName });
@@ -512,7 +510,6 @@ async function doSyncFromDelivery() {
               if (t.id !== napumIdToCrmId[napumKey]) return t;
               const next = { ...t, status, amount, tax: 0, memo };
               if (o.paidAmount)       next.paidAmount       = o.paidAmount;       else delete next.paidAmount;
-              // 완납→미수 복귀 시 명시적으로 삭제
               if (o.paidAt)           next.paidAt           = o.paidAt;           else delete next.paidAt;
               if (o.paidMethod)       next.paidMethod       = o.paidMethod;       else delete next.paidMethod;
               if (o.paidMethodDetail) next.paidMethodDetail = o.paidMethodDetail; else delete next.paidMethodDetail;
@@ -539,10 +536,10 @@ async function doSyncFromDelivery() {
 
         const wsTotal = wsNewTx + wsUpdTx;
         wsListUpdated[i] = { ...ws, lastSync: new Date().toLocaleString('ko-KR'), syncedCount: wsTotal };
-        perWorkspace.push({ ...ws, error:false, newTx:wsNewTx, updTx:wsUpdTx });
+        perWorkspace.push({ ...ws, error: false, newTx: wsNewTx, updTx: wsUpdTx });
       } catch (err) {
-        perWorkspace.push({ ...ws, error:true, newTx:0, msg:err.message });
-        wsListUpdated[i] = { ...ws, lastSync:'오류', syncedCount:0 };
+        perWorkspace.push({ ...ws, error: true, newTx: 0, msg: err.message });
+        wsListUpdated[i] = { ...ws, lastSync: '오류', syncedCount: 0 };
       }
     }
 
@@ -552,10 +549,10 @@ async function doSyncFromDelivery() {
     await saveTX();
     render();
 
-    M.syncModal = { ...M.syncModal, step:'done', result:{ wsCount:workspaces.length, newClients:totalNewClients, newTx:totalNewTx, updTx:totalUpdTx, perWorkspace } };
+    M.syncModal = { ...M.syncModal, step: 'done', result: { wsCount: workspaces.length, newClients: totalNewClients, newTx: totalNewTx, updTx: totalUpdTx, perWorkspace } };
     renderModals();
   } catch (err) {
-    M.syncModal = { ...M.syncModal, step:'error', error: err.message || '알 수 없는 오류가 발생했습니다.' };
+    M.syncModal = { ...M.syncModal, step: 'error', error: err.message || '알 수 없는 오류가 발생했습니다.' };
     renderModals();
   }
 }
@@ -563,7 +560,7 @@ async function doSyncFromDelivery() {
 // ── 납품 명세표 모달 ──────────────────────────────────────────────────────────
 function openStatModal(clientName) {
   if (!clientName || clientName === '?') return;
-  M.statModal = { clientName, month: thisMonth(), step:'loading', orders:[], error:null };
+  M.statModal = { clientName, month: thisMonth(), step: 'loading', orders: [], error: null };
   _pushModalHistory();
   renderModals();
   _loadStatOrders();
@@ -591,12 +588,12 @@ async function _loadStatOrders() {
     const sep = t._napumId.indexOf(':');
     if (sep > 0) {
       const wsId = t._napumId.slice(0, sep);
-      if (!wsFromTx.has(wsId)) { wsFromTx.set(wsId, wsId); workspaces.push({ id:wsId, label:wsId }); }
+      if (!wsFromTx.has(wsId)) { wsFromTx.set(wsId, wsId); workspaces.push({ id: wsId, label: wsId }); }
     }
   });
 
   if (!workspaces.length) {
-    M.statModal = { ...sm, step:'error', error:'워크스페이스가 등록되지 않았습니다.\n사이드바 메뉴 → 납품 관리 연동에서 추가하세요.' };
+    M.statModal = { ...sm, step: 'error', error: '워크스페이스가 등록되지 않았습니다.\n사이드바 메뉴 → 납품 관리 연동에서 추가하세요.' };
     renderModals(); return;
   }
 
@@ -605,22 +602,16 @@ async function _loadStatOrders() {
     const napumDb   = _getNapumApp().database();
     const allOrders = [];
 
-    // CRM에 직접 등록된 워크스페이스 ID 목록 (자기 워크스페이스)
     const selfWsIds = new Set(_getWorkspaces().map(w => w.id));
 
     await Promise.all(workspaces.map(async ws => {
       try {
-        // 1) 이 워크스페이스가 공개 허용한 거래처 확인
-        // ※ 자기 워크스페이스(isSelfWs)는 sharedClients 필터 적용 안 함
-        //    (납품앱에서 일부 거래처만 공개 등록해도 자기 내역은 항상 전체 조회)
         const isSelfWs = selfWsIds.has(ws.id);
         if (!isSelfWs) {
           const scSnap       = await napumDb.ref(`workspaces/${ws.id}/sharedClients`).get();
           const allowedNames = scSnap.exists() ? (scSnap.val() || []) : [];
-          // 공개 목록이 있고, 현재 조회 거래처가 허용 목록에 없으면 스킵
           if (allowedNames.length > 0 && !allowedNames.includes(sm.clientName)) return;
         }
-
         const snap   = await napumDb.ref(`workspaces/${ws.id}/orders`).get();
         const orders = Object.values(snap.val() || {});
         orders.forEach(o => {
@@ -631,10 +622,10 @@ async function _loadStatOrders() {
     }));
 
     allOrders.sort((a, b) => a.date.localeCompare(b.date));
-    if (M.statModal) M.statModal = { ...M.statModal, step:'done', orders:allOrders, error:null };
+    if (M.statModal) M.statModal = { ...M.statModal, step: 'done', orders: allOrders, error: null };
     renderModals();
   } catch (err) {
-    if (M.statModal) M.statModal = { ...M.statModal, step:'error', error: err.message };
+    if (M.statModal) M.statModal = { ...M.statModal, step: 'error', error: err.message };
     renderModals();
   }
 }
@@ -645,7 +636,7 @@ function shareStatModal(type) {
   if (!sm || sm.step !== 'done') return;
   const { clientName, month, orders } = sm;
 
-  const cl = S.clients.find(c => c.name === clientName);
+  const cl    = S.clients.find(c => c.name === clientName);
   const phone = (cl?.phone || '').replace(/[^0-9]/g, '');
 
   const monthStart  = month + '-01';
@@ -663,8 +654,7 @@ function shareStatModal(type) {
   lines.push(`📋 ${clientName} 거래명세표`);
   lines.push(`📅 ${fmtMonth(month)}`);
   lines.push('');
-  if (carryAmt > 0)
-    lines.push(`⏩ 전월 이월: ${fmtW(carryAmt)}`);
+  if (carryAmt > 0) lines.push(`⏩ 전월 이월: ${fmtW(carryAmt)}`);
   lines.push(`📦 당월 매출: ${fmtW(monthTotal)}`);
   lines.push(`💳 수금액:   ${fmtW(monthPaid)}`);
   lines.push(`🧾 청구 금액: ${fmtW(grandUnpaid)}`);
@@ -676,12 +666,10 @@ function shareStatModal(type) {
   const text = lines.join('\n');
 
   if (type === 'sms') {
-    // SMS: sms:번호?body=내용
     const encoded = encodeURIComponent(text);
     const uri = phone ? `sms:${phone}?body=${encoded}` : `sms:?body=${encoded}`;
     window.location.href = uri;
   } else if (type === 'kakao') {
-    // 카카오: 전화번호 없어도 클립보드 복사 후 안내
     if (navigator.share) {
       navigator.share({ title: `${clientName} 거래명세표`, text }).catch(() => {});
     } else {
@@ -694,7 +682,7 @@ function shareStatModal(type) {
   }
 }
 
-
+// ── 동기화 모달 빌드 ──────────────────────────────────────────────────────────
 function buildSyncModal() {
   const sm         = M.syncModal;
   const workspaces = _getWorkspaces();
@@ -751,7 +739,7 @@ function buildSyncModal() {
       </div>`;
 
   } else if (sm.step === 'loading') {
-    const prog = sm.progress || { current:0, total:0, label:'' };
+    const prog = sm.progress || { current: 0, total: 0, label: '' };
     const pct  = prog.total > 0 ? Math.round(prog.current / prog.total * 100) : 0;
     body = `
       <div style="text-align:center;padding:24px 0 16px;">
@@ -765,17 +753,17 @@ function buildSyncModal() {
       </div>`;
 
   } else if (sm.step === 'done') {
-    const r    = sm.result;
+    const r     = sm.result;
     const perWs = r.perWorkspace || [];
     body = `
       <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:14px;margin-bottom:12px;">
         <div style="color:#16a34a;font-weight:700;font-size:14px;margin-bottom:10px;">✅ 전체 동기화 완료</div>
         <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:6px;">
           ${[
-            { label:'워크스페이스', val: r.wsCount + '개',      color:'#7c3aed', bg:'#f5f3ff' },
-            { label:'신규 거래처',  val: r.newClients + '개',   color:'#16a34a', bg:'#f0fdf4' },
-            { label:'신규 거래',    val: r.newTx + '건',        color:'#b45309', bg:'#fefce8' },
-            { label:'업데이트',     val: r.updTx + '건',        color:'#1d4ed8', bg:'#eff6ff' },
+            { label: '워크스페이스', val: r.wsCount + '개',     color: '#7c3aed', bg: '#f5f3ff' },
+            { label: '신규 거래처',  val: r.newClients + '개',  color: '#16a34a', bg: '#f0fdf4' },
+            { label: '신규 거래',    val: r.newTx + '건',       color: '#b45309', bg: '#fefce8' },
+            { label: '업데이트',     val: r.updTx + '건',       color: '#1d4ed8', bg: '#eff6ff' },
           ].map(({ label, val, color, bg }) => `
             <div style="background:${bg};border-radius:8px;padding:8px 4px;text-align:center;">
               <div style="color:${color};font-size:16px;font-weight:700;">${esc(val)}</div>
@@ -816,7 +804,6 @@ function buildSyncModal() {
           <button onclick="closeSyncModal()" style="background:none;border:none;cursor:pointer;color:#94a3b8;">${I.x}</button>
         </div>
         <div style="padding:18px;">${body}</div>
-        <!-- 실시간 새로고침 버튼 -->
         ${workspaces.length > 0 && !isDone ? `
         <div style="padding:0 18px 8px;">
           <button onclick="refreshNapumListeners();closeSyncModal();"
@@ -842,7 +829,6 @@ function buildStatModal() {
   if (!sm) return '';
   const { clientName, month, step, orders, error } = sm;
 
-  // 월 옵션 (데이터 있는 월 + 최근 6개월)
   const monthSet = new Set();
   const cur = thisMonth();
   for (let i = 0; i < 6; i++) {
@@ -861,11 +847,11 @@ function buildStatModal() {
     <div style="display:flex;align-items:center;gap:6px;margin-left:auto;">
       <button onclick="${prevM ? `setStatMonth('${prevM}')` : 'void 0'}"
         ${!prevM ? 'disabled' : ''}
-        style="width:32px;height:32px;border:1px solid #e2e8f0;border-radius:8px;background:${prevM?'#fff':'#f8fafc'};color:${prevM?'#374151':'#cbd5e1'};font-size:15px;cursor:${prevM?'pointer':'default'};display:flex;align-items:center;justify-content:center;">&#8249;</button>
+        style="width:32px;height:32px;border:1px solid #e2e8f0;border-radius:8px;background:${prevM ? '#fff' : '#f8fafc'};color:${prevM ? '#374151' : '#cbd5e1'};font-size:15px;cursor:${prevM ? 'pointer' : 'default'};display:flex;align-items:center;justify-content:center;">&#8249;</button>
       <span style="font-size:13px;font-weight:700;color:#0f172a;min-width:72px;text-align:center;">${fmtMonth(month)}</span>
       <button onclick="${nextM ? `setStatMonth('${nextM}')` : 'void 0'}"
         ${!nextM ? 'disabled' : ''}
-        style="width:32px;height:32px;border:1px solid #e2e8f0;border-radius:8px;background:${nextM?'#fff':'#f8fafc'};color:${nextM?'#374151':'#cbd5e1'};font-size:15px;cursor:${nextM?'pointer':'default'};display:flex;align-items:center;justify-content:center;">&#8250;</button>
+        style="width:32px;height:32px;border:1px solid #e2e8f0;border-radius:8px;background:${nextM ? '#fff' : '#f8fafc'};color:${nextM ? '#374151' : '#cbd5e1'};font-size:15px;cursor:${nextM ? 'pointer' : 'default'};display:flex;align-items:center;justify-content:center;">&#8250;</button>
     </div>`;
 
   let body = '';
@@ -879,7 +865,7 @@ function buildStatModal() {
       ⚠️ ${esc(error || '오류가 발생했습니다.')}
     </div>`;
   } else {
-    const monthStart = month + '-01';
+    const monthStart  = month + '-01';
     const filt        = orders.filter(o => o.date && o.date.startsWith(month));
     const carryOrders = orders.filter(o => o.date && o.date < monthStart && !o.isPaid);
     const _eff  = o => o.isPaid && (o.discount || 0) > 0 ? o.total - o.discount : o.total;
@@ -892,10 +878,10 @@ function buildStatModal() {
     const grandUnpaid = carryAmt + monthUnpaid;
 
     const summaryRows = [
-      carryAmt > 0 ? { label:'⏩ 전월 이월', val:fmtW(carryAmt),    color:'#b45309', bg:'#fefce8', bd:'#fef08a' } : null,
-      { label:'당월 매출', val:fmtW(monthTotal),  color:'#16a34a', bg:'#f0fdf4', bd:'#bbf7d0' },
-      { label:'수금액',    val:fmtW(monthPaid),   color:'#1d4ed8', bg:'#eff6ff', bd:'#bfdbfe' },
-      { label:'청구 금액', val:fmtW(grandUnpaid), color: grandUnpaid > 0 ? '#dc2626' : '#16a34a', bg: grandUnpaid > 0 ? '#fff1f2' : '#f0fdf4', bd: grandUnpaid > 0 ? '#fecdd3' : '#bbf7d0' },
+      carryAmt > 0 ? { label: '⏩ 전월 이월', val: fmtW(carryAmt),    color: '#b45309', bg: '#fefce8', bd: '#fef08a' } : null,
+      { label: '당월 매출', val: fmtW(monthTotal),  color: '#16a34a', bg: '#f0fdf4', bd: '#bbf7d0' },
+      { label: '수금액',    val: fmtW(monthPaid),   color: '#1d4ed8', bg: '#eff6ff', bd: '#bfdbfe' },
+      { label: '청구 금액', val: fmtW(grandUnpaid), color: grandUnpaid > 0 ? '#dc2626' : '#16a34a', bg: grandUnpaid > 0 ? '#fff1f2' : '#f0fdf4', bd: grandUnpaid > 0 ? '#fecdd3' : '#bbf7d0' },
     ].filter(Boolean).map(({ label, val, color, bg, bd }) => `
       <div style="background:${bg};border:1px solid ${bd};border-radius:8px;padding:10px 12px;display:flex;justify-content:space-between;align-items:center;">
         <span style="color:#64748b;font-size:12px;">${label}</span>
@@ -971,7 +957,6 @@ function buildStatModal() {
       <div onclick="event.stopPropagation()" style="background:#fff;border-radius:18px 18px 0 0;width:100%;max-width:520px;max-height:88vh;display:flex;flex-direction:column;box-shadow:0 -8px 40px rgba(0,0,0,.18);">
         <div style="width:36px;height:4px;background:#e2e8f0;border-radius:2px;margin:10px auto 0;flex-shrink:0;"></div>
         <div style="padding:14px 18px 0;flex-shrink:0;">
-          <!-- 1행: 거래처명 + 닫기 -->
           <div style="display:flex;align-items:flex-start;justify-content:space-between;">
             <div>
               <div style="font-weight:700;color:#0f172a;font-size:15px;">📋 ${esc(clientName)}</div>
@@ -979,7 +964,6 @@ function buildStatModal() {
             </div>
             <button onclick="closeStatModal()" style="background:none;border:none;cursor:pointer;color:#94a3b8;padding:2px;">${I.x}</button>
           </div>
-          <!-- 2행: 공유버튼 + 월선택 -->
           ${step === 'done' ? `
           <div style="display:flex;align-items:center;gap:8px;margin-top:10px;padding-bottom:12px;border-bottom:1px solid #f1f5f9;">
             <button onclick="shareStatModal('sms')" title="문자 전송"
