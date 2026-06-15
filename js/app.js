@@ -850,6 +850,10 @@ function setCGroupFilter(v) { S.cGroupFilter = v; renderContent(); } // ★ v89 
 function setCWsFilter(v) { S.cWsFilter = v; renderContent(); }
 function setRcvSearch(v) {
   S.rcvSearch = v;
+  // 합계 카드 갱신 (검색 결과 반영)
+  const sumEl = document.getElementById('rcvSummaryCards');
+  if (sumEl) sumEl.innerHTML = _buildRcvSummaryCards();
+  // 목록 갱신
   const el = document.getElementById('rcvListArea');
   if (el) el.innerHTML = _buildRcvSections(); else renderContent();
 }

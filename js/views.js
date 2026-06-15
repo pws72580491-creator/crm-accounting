@@ -736,6 +736,38 @@ function _rcvFilterByPeriod(items) {
   });
 }
 
+function _buildRcvSummaryCards() {
+  const q = S.rcvSearch || '';
+  const allTx = _rcvFilterByPeriod(S.transactions);
+  const rec   = allTx.filter(t => t.status === TX_STATUS.UNPAID);
+  const pay   = allTx.filter(t => t.status === TX_STATUS.UNBILLED);
+
+  function _filterByQ(items) {
+    if (!q) return items;
+    return items.filter(t => {
+      const cl = S.clients.find(c => c.id === t.clientId);
+      return matchAny(q, cl?.name, t.memo, t.bizNo, String(t.clientId));
+    });
+  }
+  const recF     = _filterByQ(rec);
+  const payF     = _filterByQ(pay);
+  const totalRec = recF.reduce((s, t) => s + _txRemain(t), 0);
+  const totalPay = payF.reduce((s, t) => s + _txRemain(t), 0);
+
+  return `<div class="g2">
+    <div style="background:#fefce8;border:1px solid #fcd34d;border-radius:12px;padding:16px;">
+      <div style="color:#b45309;font-size:12px;margin-bottom:5px;">총 미수금 (받을 돈)</div>
+      <div style="color:#b45309;font-size:24px;font-weight:700;">${fmtW(totalRec)}</div>
+      <div style="color:#d97706;font-size:11px;margin-top:3px;opacity:.75;">${recF.length}건</div>
+    </div>
+    <div style="background:#fff1f2;border:1px solid #fecdd3;border-radius:12px;padding:16px;">
+      <div style="color:#dc2626;font-size:12px;margin-bottom:5px;">총 미지급금 (줄 돈)</div>
+      <div style="color:#dc2626;font-size:24px;font-weight:700;">${fmtW(totalPay)}</div>
+      <div style="color:#ef4444;font-size:11px;margin-top:3px;opacity:.75;">${payF.length}건</div>
+    </div>
+  </div>`;
+}
+
 function _buildRcvSortBtns() {
   const sortOpts = [
     { k: 'amount', label: '금액순' },
@@ -777,22 +809,6 @@ function buildReceivables() {
 
   const sortHtml = _buildRcvSortBtns();
 
-  const allTx  = _rcvFilterByPeriod(S.transactions);
-  const rec    = allTx.filter(t => t.status === TX_STATUS.UNPAID);
-  const pay    = allTx.filter(t => t.status === TX_STATUS.UNBILLED);
-
-  function _filterByQ(items) {
-    if (!q) return items;
-    return items.filter(t => {
-      const cl = S.clients.find(c => c.id === t.clientId);
-      return matchAny(q, cl?.name, t.memo, t.bizNo, String(t.clientId));
-    });
-  }
-  const recF     = _filterByQ(rec);
-  const payF     = _filterByQ(pay);
-  const totalRec = recF.reduce((s, t) => s + _txRemain(t), 0);
-  const totalPay = payF.reduce((s, t) => s + _txRemain(t), 0);
-
   return `
     <div style="display:flex;flex-direction:column;gap:16px;">
       <div style="display:flex;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;gap:8px;">
@@ -822,18 +838,7 @@ function buildReceivables() {
       </div>
 
       <!-- 합계 카드 -->
-      <div class="g2">
-        <div style="background:#fefce8;border:1px solid #fcd34d;border-radius:12px;padding:16px;">
-          <div style="color:#b45309;font-size:12px;margin-bottom:5px;">총 미수금 (받을 돈)</div>
-          <div style="color:#b45309;font-size:24px;font-weight:700;">${fmtW(totalRec)}</div>
-          <div style="color:#d97706;font-size:11px;margin-top:3px;opacity:.75;">${recF.length}건</div>
-        </div>
-        <div style="background:#fff1f2;border:1px solid #fecdd3;border-radius:12px;padding:16px;">
-          <div style="color:#dc2626;font-size:12px;margin-bottom:5px;">총 미지급금 (줄 돈)</div>
-          <div style="color:#dc2626;font-size:24px;font-weight:700;">${fmtW(totalPay)}</div>
-          <div style="color:#ef4444;font-size:11px;margin-top:3px;opacity:.75;">${payF.length}건</div>
-        </div>
-      </div>
+      <div id="rcvSummaryCards">${_buildRcvSummaryCards()}</div>
       <div id="rcvListArea">${_buildRcvSections()}</div>
     </div>`;
 }
