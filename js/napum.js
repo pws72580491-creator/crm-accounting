@@ -217,6 +217,8 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
   S.transactions.forEach(t => { if (t._napumId) napumIdToCrmId[t._napumId] = t.id; });
   const synced  = new Set(lsGet('crm_napum_synced', []));
   let changed   = false;
+  const changedClientIds = new Set(); // 변경/추가된 client id (건별 저장용)
+  const changedTxIds     = new Set(); // 변경/추가된 transaction id (건별 저장용)
 
   // ── 1단계: 거래처 자동 추가 (clients 목록 기반) ──────────────────────────
   napumClients.forEach(nc => {
@@ -230,6 +232,7 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
       };
       S.clients = [...S.clients, newC];
       nameToId[nc.name] = newC.id; changed = true;
+      changedClientIds.add(newC.id);
     } else {
       const cid = nameToId[nc.name];
       S.clients = S.clients.map(c => {
@@ -239,7 +242,7 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
         if (nc.phone   && !c.phone)   next.phone   = nc.phone;
         if (nc.address && !c.address) next.address = nc.address;
         if (!c._wsId) next._wsId = ws.id;
-        if (JSON.stringify(next) !== prev) { changed = true; return next; }
+        if (JSON.stringify(next) !== prev) { changed = true; changedClientIds.add(cid); return next; }
         return c;
       });
     }
@@ -258,6 +261,7 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
     };
     S.clients = [...S.clients, newC];
     nameToId[crmName] = newC.id; changed = true;
+    changedClientIds.add(newC.id);
     console.info('[실시간] orders에서 거래처 자동 추가:', crmName, ws.label);
   });
 
@@ -290,7 +294,7 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
         if (o.paidAt)                   next.paidAt           = o.paidAt;           else delete next.paidAt;
         if (o.paidMethod)               next.paidMethod       = o.paidMethod;       else delete next.paidMethod;
         if (o.paidMethodDetail)         next.paidMethodDetail = o.paidMethodDetail; else delete next.paidMethodDetail;
-        if (JSON.stringify(next) !== prev) changed = true;
+        if (JSON.stringify(next) !== prev) { changed = true; changedTxIds.add(t.id); }
         return next;
       });
     } else {
@@ -308,6 +312,7 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
         if (o.paidMethodDetail)         newT.paidMethodDetail = o.paidMethodDetail;
         S.transactions = [...S.transactions, newT];
         synced.add(napumKey); changed = true;
+        changedTxIds.add(newT.id);
       }
     }
   });
@@ -317,8 +322,23 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
     lsSet('crm_tx', S.transactions);
     lsSet('crm_napum_synced', [...synced]);
     (async () => {
-      try { await saveC(); await saveTX(); }
-      catch (e) { console.error('[납품싱크] Firebase 저장 실패:', e); showToast('⚠️ CRM 저장 실패 (로컬은 유지됨)'); }
+      try {
+        // 전체 clients/transactions를 한 번에 set()하면 데이터가 많을 때
+        // 페이로드가 커져 모바일 네트워크에서 타임아웃이 빈발함.
+        // → 변경/추가된 항목만 건별 경로(clients/{id}, transactions/{id})로 저장
+        const clientWrites = [...changedClientIds].map(id => {
+          const c = S.clients.find(x => x.id === id);
+          return c ? _saveOneClient(c) : Promise.resolve();
+        });
+        const txWrites = [...changedTxIds].map(id => {
+          const t = S.transactions.find(x => x.id === id);
+          return t ? _saveOneTx(t) : Promise.resolve();
+        });
+        await Promise.all([...clientWrites, ...txWrites]);
+      } catch (e) {
+        console.error('[납품싱크] Firebase 저장 실패:', e);
+        showToast('⚠️ CRM 저장 실패 (로컬은 유지됨)');
+      }
     })();
     render();
     // 자기 패치 echo인 경우 토스트 생략 (이미 _afterNapumPatch에서 표시함)
@@ -409,6 +429,8 @@ async function doSyncFromDelivery() {
     let totalNewClients = 0, totalNewTx = 0, totalUpdTx = 0;
     const perWorkspace  = [];
     const wsListUpdated = [...workspaces];
+    const syncChangedClientIds = new Set();
+    const syncChangedTxIds     = new Set();
 
     for (let i = 0; i < workspaces.length; i++) {
       const ws = workspaces[i];
@@ -457,6 +479,7 @@ async function doSyncFromDelivery() {
             };
             S.clients = [...S.clients, newC];
             nameToId[nc.name] = newC.id; wsNewClients++; totalNewClients++;
+            syncChangedClientIds.add(newC.id);
           } else {
             const cid = nameToId[nc.name];
             S.clients = S.clients.map(c => {
@@ -465,6 +488,7 @@ async function doSyncFromDelivery() {
               if (nc.phone   && !c.phone)   next.phone   = nc.phone;
               if (nc.address && !c.address) next.address = nc.address;
               if (!c._wsId) next._wsId = ws.id;
+              if (nc.phone || nc.address || !c._wsId) syncChangedClientIds.add(cid);
               return next;
             });
           }
@@ -484,6 +508,7 @@ async function doSyncFromDelivery() {
             };
             S.clients = [...S.clients, newC];
             nameToId[crmName] = newC.id; wsNewClients++; totalNewClients++;
+            syncChangedClientIds.add(newC.id);
             console.info('[동기화] orders에서 거래처 자동 추가:', crmName, ws.label);
           }
         });
@@ -516,6 +541,7 @@ async function doSyncFromDelivery() {
               return next;
             });
             wsUpdTx++; totalUpdTx++;
+            syncChangedTxIds.add(napumIdToCrmId[napumKey]);
           } else {
             const alreadyExists = S.transactions.some(t => t._napumId === napumKey);
             if (!alreadyExists) {
@@ -530,6 +556,7 @@ async function doSyncFromDelivery() {
               if (o.paidMethodDetail)         newT.paidMethodDetail = o.paidMethodDetail;
               S.transactions = [...S.transactions, newT];
               synced.add(napumKey); wsNewTx++; totalNewTx++;
+              syncChangedTxIds.add(newT.id);
             }
           }
         });
@@ -545,8 +572,23 @@ async function doSyncFromDelivery() {
 
     _saveWorkspaces(wsListUpdated);
     lsSet('crm_napum_synced', [...synced]);
-    await saveC();
-    await saveTX();
+    lsSet('crm_clients', S.clients);
+    lsSet('crm_tx', S.transactions);
+    // 전체 set() 대신 변경/추가된 항목만 건별 경로로 저장 (대용량 페이로드 타임아웃 방지)
+    try {
+      const clientWrites = [...syncChangedClientIds].map(id => {
+        const c = S.clients.find(x => x.id === id);
+        return c ? _saveOneClient(c) : Promise.resolve();
+      });
+      const txWrites = [...syncChangedTxIds].map(id => {
+        const t = S.transactions.find(x => x.id === id);
+        return t ? _saveOneTx(t) : Promise.resolve();
+      });
+      await Promise.all([...clientWrites, ...txWrites]);
+    } catch (e) {
+      console.error('[수동동기화] Firebase 저장 실패:', e);
+      showToast('⚠️ 클라우드 저장 일부 실패 (로컬은 유지됨)');
+    }
     render();
 
     M.syncModal = { ...M.syncModal, step: 'done', result: { wsCount: workspaces.length, newClients: totalNewClients, newTx: totalNewTx, updTx: totalUpdTx, perWorkspace } };

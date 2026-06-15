@@ -164,40 +164,46 @@ if (!window._wqLifecycleBound) {
  * Permission 오류 등 코드 버그는 대기열에 넣지 않고 토스트만.
  */
 async function _fbWrite(ref, data, label) {
-  // Firebase Database URL에서 경로 부분만 추출 (대기열 키)
   const path = ref.toString().replace(/^https?:\/\/[^/]+/, '');
 
-  const _isNetwork = e => {
-    const msg = (e.message || e.code || '').toLowerCase();
-    return msg.includes('network') || msg.includes('timeout')
-        || msg.includes('unavailable') || e.code === 'NETWORK_ERROR';
+  // 네트워크/일시적 오류 판별 (Firebase RTDB 오프라인 패턴 포괄)
+  const _isTransient = e => {
+    const code = (e.code || '').toLowerCase();
+    const msg  = (e.message || '').toLowerCase();
+    if (code === 'permission_denied') return false;
+    return (
+      code.includes('network')    || code.includes('unavailable') ||
+      code.includes('cancelled')  || code.includes('timeout')     ||
+      msg.includes('network')     || msg.includes('timeout')      ||
+      msg.includes('transport')   || msg.includes('connect')      ||
+      msg.includes('fetch')       || msg.includes('offline')      ||
+      msg.includes('unavailable') || !navigator.onLine
+    );
   };
 
   try {
     await ref.set(data);
-    // 성공 시 이전에 대기열에 있던 같은 경로 항목 제거
     _wqRemove(path);
     return;
   } catch (e1) {
-    if (_isNetwork(e1)) {
-      // 1.5초 후 1회 재시도
+    console.warn('[_fbWrite] 1차 실패 (' + label + '):', e1.code || e1.message);
+
+    if (_isTransient(e1)) {
       await new Promise(r => setTimeout(r, 1500));
       try {
         await ref.set(data);
         _wqRemove(path);
         return;
       } catch (e2) {
-        if (_isNetwork(e2)) {
-          // 재시도도 실패 → 대기열 등록 (복구 후 자동 재전송)
-          _wqAdd(path, data, label);
-          showToast('⚠️ 오프라인: 로컬 저장됨. 연결 복구 시 자동 동기화');
-          return;
-        }
+        console.warn('[_fbWrite] 2차 실패 (' + label + '):', e2.code || e2.message);
+        // 재시도 실패 — 오류 종류 무관하게 대기열 등록
+        _wqAdd(path, data, label);
+        showToast('☁️ 오프라인: 로컬 저장됨. 연결 복구 시 자동 동기화');
+        return;
       }
     }
-    // Permission 오류 등 코드 버그
-    console.error(`[_fbWrite] ${label} 실패:`, e1);
-    showToast('⚠️ 클라우드 저장 실패 (로컬 저장됨)');
+    // 영구 오류 (Permission denied 등) — 조용히 로그만
+    console.error('[_fbWrite] 영구 오류 (' + label + '):', e1);
   }
 }
 
