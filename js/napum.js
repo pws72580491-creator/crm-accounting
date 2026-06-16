@@ -413,44 +413,52 @@ async function doSyncFromDelivery() {
   M.syncModal = { ...sm, step: 'loading', error: null, progress: { current: 0, total: workspaces.length, label: 'Firebase 초기화 중...' } };
   renderModals();
 
+  // UI 블로킹 방지: 다음 마이크로태스크로 넘겨 renderModals()가 실제로 그려지게 함
+  await new Promise(r => setTimeout(r, 60));
+
   try {
     if (!_fbReady) {
       await initFirebase();
       if (!_fbReady) throw new Error('Firebase SDK 로드 실패. 네트워크를 확인해주세요.');
     }
 
-    const napumDb        = _getNapumApp().database();
-    const nameToId       = {};
-    S.clients.forEach(c => { nameToId[c.name] = c.id; });
-    const synced         = new Set(lsGet('crm_napum_synced', []));
-    const napumIdToCrmId = {};
-    S.transactions.forEach(t => { if (t._napumId) napumIdToCrmId[t._napumId] = t.id; });
+    const napumDb = _getNapumApp().database();
+
+    // ── 인덱스 맵 구성 (O(n) 선형) ─────────────────────────────────────────
+    // S.clients/S.transactions 배열을 Map으로 전환 → forEach 안에서 매번 find/map 호출 제거
+    const nameToId       = {};   // clientName → crmId
+    const clientMap      = new Map(); // crmId → client 객체
+    S.clients.forEach(c => { nameToId[c.name] = c.id; clientMap.set(c.id, c); });
+
+    const txMap          = new Map(); // crmId → tx 객체
+    const napumIdToCrmId = {};        // napumKey → crmId
+    S.transactions.forEach(t => {
+      txMap.set(t.id, t);
+      if (t._napumId) napumIdToCrmId[t._napumId] = t.id;
+    });
+
+    const synced = new Set(lsGet('crm_napum_synced', []));
 
     let totalNewClients = 0, totalNewTx = 0, totalUpdTx = 0;
-    const perWorkspace  = [];
-    const wsListUpdated = [...workspaces];
+    const perWorkspace         = [];
+    const wsListUpdated        = [...workspaces];
     const syncChangedClientIds = new Set();
     const syncChangedTxIds     = new Set();
 
+    // ── 워크스페이스 순회 ─────────────────────────────────────────────────
     for (let i = 0; i < workspaces.length; i++) {
       const ws = workspaces[i];
       M.syncModal = { ...M.syncModal, progress: { current: i + 1, total: workspaces.length, label: `"${ws.label}" 읽는 중...` } };
       renderModals();
+      await new Promise(r => setTimeout(r, 0)); // UI 숨 쉴 틈
 
       let wsNewClients = 0, wsNewTx = 0, wsUpdTx = 0;
       try {
         const wsRef = napumDb.ref('workspaces/' + ws.id);
-        const [csSnap, ordSnap, scSnap] = await Promise.all([
+        const [csSnap, ordSnap] = await Promise.all([
           wsRef.child('clients').get(),
           wsRef.child('orders').get(),
-          wsRef.child('sharedClients').get(),
         ]);
-
-        const allowedClients = scSnap.exists() ? (scSnap.val() || []) : [];
-        const allowedSet     = new Set(allowedClients);
-        // ★ doSync는 항상 자기가 등록한 ws만 처리 → 필터 OFF (전체 허용)
-        //   sharedClients는 외부 CRM에게 공개할 목록일 뿐, 내 동기화 범위와 무관
-        const useFilter      = false;
 
         if (!csSnap.exists() && !ordSnap.exists()) {
           perWorkspace.push({ ...ws, error: true, newTx: 0 });
@@ -459,94 +467,90 @@ async function doSyncFromDelivery() {
         }
 
         const napumClientsRaw = csSnap.val() || {};
-        const napumClients    = Object.values(napumClientsRaw)
-          .filter(nc => !useFilter || allowedSet.has(nc.name));
-        const napumOrders     = Object.values(ordSnap.val() || {})
-          .filter(o  => !useFilter || allowedSet.has(o.clientName));
+        const napumClients    = Object.values(napumClientsRaw);
+        const napumOrders     = Object.values(ordSnap.val() || {});
 
         const napumClientById = {};
         napumClients.forEach(nc => { if (nc.id != null) napumClientById[String(nc.id)] = nc; });
 
-        // ── 1단계: 거래처 병합 (orders 처리 전에 반드시 완료) ────────────────
+        // ── 1단계: 거래처 병합 ────────────────────────────────────────────
         napumClients.forEach(nc => {
           if (!nc.name || nc.isHidden) return;
           if (!nameToId[nc.name]) {
             const newC = {
-              id: nextId(S.clients), name: nc.name, bizNo: '', rep: '', email: '',
+              id: nextId([...clientMap.values()]), name: nc.name, bizNo: '', rep: '', email: '',
               phone: nc.phone || '', address: nc.address || '', type: '매출처',
               memo: `[${ws.label}]${nc.note ? ' ' + nc.note : ''}`,
               _wsId: ws.id,
             };
-            S.clients = [...S.clients, newC];
+            clientMap.set(newC.id, newC);
             nameToId[nc.name] = newC.id; wsNewClients++; totalNewClients++;
             syncChangedClientIds.add(newC.id);
           } else {
-            const cid = nameToId[nc.name];
-            S.clients = S.clients.map(c => {
-              if (c.id !== cid) return c;
-              const next = { ...c };
-              if (nc.phone   && !c.phone)   next.phone   = nc.phone;
-              if (nc.address && !c.address) next.address = nc.address;
-              if (!c._wsId) next._wsId = ws.id;
-              if (nc.phone || nc.address || !c._wsId) syncChangedClientIds.add(cid);
-              return next;
-            });
+            const cid  = nameToId[nc.name];
+            const prev = clientMap.get(cid);
+            if (!prev) return;
+            const next = { ...prev };
+            let dirty  = false;
+            if (nc.phone   && !prev.phone)   { next.phone   = nc.phone;   dirty = true; }
+            if (nc.address && !prev.address) { next.address = nc.address; dirty = true; }
+            if (!prev._wsId)                 { next._wsId   = ws.id;      dirty = true; }
+            if (dirty) { clientMap.set(cid, next); syncChangedClientIds.add(cid); }
           }
         });
 
-        // ── 2단계: orders에 등장하는 미등록 거래처 추가 ─────────────────────
+        // ── 2단계: orders에 등장하는 미등록 거래처 추가 ──────────────────
         napumOrders.forEach(o => {
           const nc      = napumClientById[String(o.clientId)];
           const crmName = o.clientName || nc?.name || '';
-          if (!crmName) return;
-          if (!nameToId[crmName]) {
-            const newC = {
-              id: nextId(S.clients), name: crmName, bizNo: '', rep: '', email: '',
-              phone: nc?.phone || '', address: nc?.address || '', type: '매출처',
-              memo: `[${ws.label}] (주문에서 자동 추가)`,
-              _wsId: ws.id,
-            };
-            S.clients = [...S.clients, newC];
-            nameToId[crmName] = newC.id; wsNewClients++; totalNewClients++;
-            syncChangedClientIds.add(newC.id);
-            console.info('[동기화] orders에서 거래처 자동 추가:', crmName, ws.label);
-          }
+          if (!crmName || nameToId[crmName]) return;
+          const newC = {
+            id: nextId([...clientMap.values()]), name: crmName, bizNo: '', rep: '', email: '',
+            phone: nc?.phone || '', address: nc?.address || '', type: '매출처',
+            memo: `[${ws.label}] (주문에서 자동 추가)`,
+            _wsId: ws.id,
+          };
+          clientMap.set(newC.id, newC);
+          nameToId[crmName] = newC.id; wsNewClients++; totalNewClients++;
+          syncChangedClientIds.add(newC.id);
         });
 
-        // ── 3단계: 거래 처리 (누락 없이 전체 반영) ──────────────────────────
-        napumOrders.forEach(o => {
-          if (!o.date || !o.total) return;
-          const nc          = napumClientById[String(o.clientId)];
-          const crmName     = o.clientName || nc?.name || '';
-          const crmClientId = nameToId[crmName];
-          if (!crmClientId) {
-            console.warn('[동기화] 거래처 매핑 실패 → 건너뜀', { orderId: o.id, clientId: o.clientId, crmName });
-            return;
-          }
+        // ── 3단계: 거래 처리 — 청크 단위로 분할해 UI 블로킹 방지 ──────────
+        // 2000건을 한 번에 forEach하면 메인스레드가 수초 블로킹됨
+        // → 100건씩 처리 후 await setTimeout(0)으로 UI 숨 쉴 틈 부여
+        const CHUNK = 100;
+        for (let ci = 0; ci < napumOrders.length; ci += CHUNK) {
+          const chunk = napumOrders.slice(ci, ci + CHUNK);
 
-          const memoItems = (o.items || []).map(i => `${i.name}${i.qty > 1 ? ` ×${i.qty}` : ''}`).join(', ');
-          const memo      = `[${ws.label}]${o.isVoid ? ' [타인]' : ''} ${o.note || (memoItems || '납품')}`;
-          const amount    = Number(o.total) || 0;
-          const status    = o.isPaid ? TX_STATUS.PAID : TX_STATUS.UNPAID;
-          const napumKey  = `${ws.id}:${o.id}`;
+          chunk.forEach(o => {
+            if (!o.date || !o.total) return;
+            const nc          = napumClientById[String(o.clientId)];
+            const crmName     = o.clientName || nc?.name || '';
+            const crmClientId = nameToId[crmName];
+            if (!crmClientId) return;
 
-          if (napumIdToCrmId[napumKey]) {
-            S.transactions = S.transactions.map(t => {
-              if (t.id !== napumIdToCrmId[napumKey]) return t;
-              const next = { ...t, status, amount, tax: 0, memo };
+            const memoItems = (o.items || []).map(it => `${it.name}${it.qty > 1 ? ` ×${it.qty}` : ''}`).join(', ');
+            const memo      = `[${ws.label}]${o.isVoid ? ' [타인]' : ''} ${o.note || (memoItems || '납품')}`;
+            const amount    = Number(o.total) || 0;
+            const status    = o.isPaid ? TX_STATUS.PAID : TX_STATUS.UNPAID;
+            const napumKey  = `${ws.id}:${o.id}`;
+
+            if (napumIdToCrmId[napumKey]) {
+              // 기존 거래 업데이트 — txMap에서 직접 수정 (배열 재생성 없음)
+              const prev = txMap.get(napumIdToCrmId[napumKey]);
+              if (!prev) return;
+              const next = { ...prev, status, amount, tax: 0, memo };
               if (o.paidAmount)       next.paidAmount       = o.paidAmount;       else delete next.paidAmount;
               if (o.paidAt)           next.paidAt           = o.paidAt;           else delete next.paidAt;
               if (o.paidMethod)       next.paidMethod       = o.paidMethod;       else delete next.paidMethod;
               if (o.paidMethodDetail) next.paidMethodDetail = o.paidMethodDetail; else delete next.paidMethodDetail;
-              return next;
-            });
-            wsUpdTx++; totalUpdTx++;
-            syncChangedTxIds.add(napumIdToCrmId[napumKey]);
-          } else {
-            const alreadyExists = S.transactions.some(t => t._napumId === napumKey);
-            if (!alreadyExists) {
+              txMap.set(next.id, next);
+              wsUpdTx++; totalUpdTx++;
+              syncChangedTxIds.add(next.id);
+            } else if (!napumIdToCrmId[napumKey]) {
+              // 신규 거래 — txMap에 추가 (배열 스프레드 없음)
               const newT = {
-                id: nextId(S.transactions), date: o.date, clientId: crmClientId,
+                id: nextId([...txMap.values()]), date: o.date, clientId: crmClientId,
                 type: '매출', amount, tax: 0, memo, status, _napumId: napumKey,
               };
               if (o.items && o.items.length)  newT.items            = o.items;
@@ -554,12 +558,22 @@ async function doSyncFromDelivery() {
               if (o.paidAt)                   newT.paidAt           = o.paidAt;
               if (o.paidMethod)               newT.paidMethod       = o.paidMethod;
               if (o.paidMethodDetail)         newT.paidMethodDetail = o.paidMethodDetail;
-              S.transactions = [...S.transactions, newT];
+              txMap.set(newT.id, newT);
+              napumIdToCrmId[napumKey] = newT.id; // 중복 방지
               synced.add(napumKey); wsNewTx++; totalNewTx++;
               syncChangedTxIds.add(newT.id);
             }
-          }
-        });
+          });
+
+          // 진행률 업데이트 + UI 숨 쉴 틈 (청크마다)
+          const processed = Math.min(ci + CHUNK, napumOrders.length);
+          M.syncModal = { ...M.syncModal, progress: {
+            current: i + 1, total: workspaces.length,
+            label: `"${ws.label}" 처리 중… (${processed}/${napumOrders.length}건)`,
+          }};
+          renderModals();
+          await new Promise(r => setTimeout(r, 0));
+        }
 
         const wsTotal = wsNewTx + wsUpdTx;
         wsListUpdated[i] = { ...ws, lastSync: new Date().toLocaleString('ko-KR'), syncedCount: wsTotal };
@@ -570,27 +584,62 @@ async function doSyncFromDelivery() {
       }
     }
 
+    // ── Map → Array 역변환 (1회) ─────────────────────────────────────────
+    S.clients      = [...clientMap.values()].sort((a, b) => a.id - b.id);
+    S.transactions = [...txMap.values()].sort((a, b) => a.id - b.id);
+
     _saveWorkspaces(wsListUpdated);
     lsSet('crm_napum_synced', [...synced]);
-    lsSet('crm_clients', S.clients);
-    lsSet('crm_tx', S.transactions);
-    // 전체 set() 대신 변경/추가된 항목만 건별 경로로 저장 (대용량 페이로드 타임아웃 방지)
-    try {
-      const clientWrites = [...syncChangedClientIds].map(id => {
-        const c = S.clients.find(x => x.id === id);
-        return c ? _saveOneClient(c) : Promise.resolve();
-      });
-      const txWrites = [...syncChangedTxIds].map(id => {
-        const t = S.transactions.find(x => x.id === id);
-        return t ? _saveOneTx(t) : Promise.resolve();
-      });
-      await Promise.all([...clientWrites, ...txWrites]);
-    } catch (e) {
-      console.error('[수동동기화] Firebase 저장 실패:', e);
-      showToast('⚠️ 클라우드 저장 일부 실패 (로컬은 유지됨)');
-    }
-    render();
+    lsSet('crm_clients',      S.clients);
+    lsSet('crm_tx',           S.transactions);
 
+    // ── Firebase 저장 전략 결정 ───────────────────────────────────────────
+    // 변경 건수가 전체의 30% 이상이면 통째로 set() 1회 (건별보다 훨씬 빠름)
+    // 그 이하면 건별 경로로 저장해 다른 클라이언트의 데이터와 충돌 최소화
+    const totalTx      = S.transactions.length;
+    const changedTxCnt = syncChangedTxIds.size;
+    const useBulk      = changedTxCnt > 50 || changedTxCnt / Math.max(totalTx, 1) >= 0.3;
+
+    if (useBulk) {
+      // 대량 변경: 통째로 set() — 2000건도 1회 왕복으로 완료
+      M.syncModal = { ...M.syncModal, progress: {
+        current: workspaces.length, total: workspaces.length,
+        label: `클라우드 저장 중… (${changedTxCnt}건 일괄 업로드)`,
+      }};
+      renderModals();
+      await Promise.all([
+        _fbWrite(db.ref('clients'),      toMap(S.clients),       'sync:bulkClients'),
+        _fbWrite(db.ref('transactions'), toMap(S.transactions),  'sync:bulkTx'),
+      ]);
+    } else {
+      // 소량 변경: 건별 저장 (50개씩 병렬 청크 + 진행률 표시)
+      const _chunkSave = async (ids, arr, saveFn, labelPrefix) => {
+        const idArr = [...ids];
+        const CHUNK = 50;
+        for (let i = 0; i < idArr.length; i += CHUNK) {
+          await Promise.all(idArr.slice(i, i + CHUNK).map(id => {
+            const obj = arr.find(x => x.id === id);
+            return obj ? saveFn(obj) : Promise.resolve();
+          }));
+          const done = Math.min(i + CHUNK, idArr.length);
+          M.syncModal = { ...M.syncModal, progress: {
+            current: workspaces.length, total: workspaces.length,
+            label: `${labelPrefix} ${done}/${idArr.length}건 저장 중…`,
+          }};
+          renderModals();
+          if (i + CHUNK < idArr.length) await new Promise(r => setTimeout(r, 80));
+        }
+      };
+
+      M.syncModal = { ...M.syncModal, progress: {
+        current: workspaces.length, total: workspaces.length, label: '거래처 저장 중…',
+      }};
+      renderModals();
+      await _chunkSave(syncChangedClientIds, S.clients,      _saveOneClient, '거래처');
+      await _chunkSave(syncChangedTxIds,     S.transactions, _saveOneTx,     '거래');
+    }
+
+    render();
     M.syncModal = { ...M.syncModal, step: 'done', result: { wsCount: workspaces.length, newClients: totalNewClients, newTx: totalNewTx, updTx: totalUpdTx, perWorkspace } };
     renderModals();
   } catch (err) {
