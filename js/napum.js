@@ -130,7 +130,6 @@ async function attachNapumListeners() {
           '| 거래처', Object.keys(_napumClientsCache).length, '명');
       })
       .catch(e => {
-        // 초기화 실패 시 마커 제거 → 다음 재연결 때 재시도
         delete _napumListeners[ws.id];
         console.warn('[납품 실시간] 초기 로드 실패, 다음 재연결 시 재시도:', ws.id, e.message);
       });
@@ -177,7 +176,8 @@ function detachNapumListeners() {
   for (const wsId of Object.keys(_napumListeners)) {
     const h = _napumListeners[wsId];
     if (h.clientsRef)       h.clientsRef.off('value', h.clientsCb);
-    if (h.ordersRef)        h.ordersRef.off('value',  h.ordersCb);
+    if (h.ordersRef && h.ordersCb) h.ordersRef.off('value', h.ordersCb);
+    if (h._detachOrders)    h._detachOrders(); // child 이벤트 방식 잔여 정리
     if (h.sharedClientsRef) h.sharedClientsRef.off('value', h.sharedClientsCb);
     delete _napumListeners[wsId];
   }
@@ -185,147 +185,149 @@ function detachNapumListeners() {
 
 /**
  * 납품 앱 orders 스냅샷을 받아 CRM에 반영
- * allowed: 이 워크스페이스가 공개 허용한 거래처명 배열 (빈 배열 = 공개 없음)
+ * Map 기반 처리 — O(n²) 배열 재생성 없음
  */
 function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = []) {
-  // ★ 핵심: 자기 워크스페이스(isSelfWs)는 sharedClients 필터 적용 안 함
-  //   sharedClients는 "다른 사람 CRM에게 공개할 항목" 목록일 뿐,
-  //   내 CRM 동기화 범위와는 무관 → 자기 ws는 항상 전체 거래처/주문 허용
   const isSelfWs   = _getWorkspaces().some(w => w.id === ws.id);
-  const useFilter  = !isSelfWs; // 자기 ws → 필터 OFF, 외부 ws → 필터 ON
+  const useFilter  = !isSelfWs;
   const allowedSet = new Set(allowed);
 
-  const orders = Object.values(ordersObj)
-    .filter(o => {
-      if (!useFilter) return true;                              // 자기 ws → 전체 허용
-      if (!isSelfWs && allowed.length === 0) return false;     // 외부 ws + 공개 없음 → 전부 차단
-      return allowedSet.has(o.clientName);                     // 외부 ws → 허용된 거래처만
-    });
-  const napumClients = Object.values(napumClientsObj)
-    .filter(nc => {
-      if (!useFilter) return true;
-      if (!isSelfWs && allowed.length === 0) return false;
-      return allowedSet.has(nc.name);
-    });
+  const orders = Object.values(ordersObj).filter(o => {
+    if (!useFilter) return true;
+    if (allowed.length === 0) return false;
+    return allowedSet.has(o.clientName);
+  });
+  const napumClients = Object.values(napumClientsObj).filter(nc => {
+    if (!useFilter) return true;
+    if (allowed.length === 0) return false;
+    return allowedSet.has(nc.name);
+  });
+
+  console.info('[납품싱크] 스냅샷 수신:', ws.label,
+    '| orders:', orders.length, '| clients:', napumClients.length,
+    '| isSelfWs:', isSelfWs, '| CRM tx 기존:', S.transactions.length);
 
   const napumClientById = {};
   napumClients.forEach(nc => { if (nc.id != null) napumClientById[String(nc.id)] = nc; });
 
-  const nameToId = {};
-  S.clients.forEach(c => { nameToId[c.name] = c.id; });
-  const napumIdToCrmId = {};
-  S.transactions.forEach(t => { if (t._napumId) napumIdToCrmId[t._napumId] = t.id; });
-  const synced  = new Set(lsGet('crm_napum_synced', []));
-  let changed   = false;
-  const changedClientIds = new Set(); // 변경/추가된 client id (건별 저장용)
-  const changedTxIds     = new Set(); // 변경/추가된 transaction id (건별 저장용)
+  // ── Map 인덱스 구성 (O(n), 배열 루프 제거) ───────────────────────────────
+  const nameToId       = {};          // clientName → crmId
+  const clientMap      = new Map();   // crmId → client 객체
+  S.clients.forEach(c => { nameToId[c.name] = c.id; clientMap.set(c.id, c); });
 
-  // ── 1단계: 거래처 자동 추가 (clients 목록 기반) ──────────────────────────
+  const txMap          = new Map();   // crmId → tx 객체
+  const napumIdToCrmId = {};          // napumKey → crmId
+  S.transactions.forEach(t => {
+    txMap.set(t.id, t);
+    if (t._napumId) napumIdToCrmId[t._napumId] = t.id;
+  });
+
+  const synced           = new Set(lsGet('crm_napum_synced', []));
+  let changed            = false;
+  const changedClientIds = new Set();
+  const changedTxIds     = new Set();
+
+  // ── 1단계: 거래처 병합 ────────────────────────────────────────────────────
   napumClients.forEach(nc => {
     if (!nc.name || nc.isHidden) return;
     if (!nameToId[nc.name]) {
       const newC = {
-        id: nextId(S.clients), name: nc.name, bizNo: '', rep: '', email: '',
+        id: nextId([...clientMap.values()]), name: nc.name, bizNo: '', rep: '', email: '',
         phone: nc.phone || '', address: nc.address || '', type: '매출처',
-        memo: `[${ws.label}]${nc.note ? ' ' + nc.note : ''}`,
+        memo: '[' + ws.label + ']' + (nc.note ? ' ' + nc.note : ''),
         _wsId: ws.id,
       };
-      S.clients = [...S.clients, newC];
+      clientMap.set(newC.id, newC);
       nameToId[nc.name] = newC.id; changed = true;
       changedClientIds.add(newC.id);
     } else {
-      const cid = nameToId[nc.name];
-      S.clients = S.clients.map(c => {
-        if (c.id !== cid) return c;
-        const prev = JSON.stringify(c);
-        const next = { ...c };
-        if (nc.phone   && !c.phone)   next.phone   = nc.phone;
-        if (nc.address && !c.address) next.address = nc.address;
-        if (!c._wsId) next._wsId = ws.id;
-        if (JSON.stringify(next) !== prev) { changed = true; changedClientIds.add(cid); return next; }
-        return c;
-      });
+      const cid  = nameToId[nc.name];
+      const prev = clientMap.get(cid);
+      if (!prev) return;
+      let dirty  = false;
+      const next = { ...prev };
+      if (nc.phone   && !prev.phone)   { next.phone   = nc.phone;   dirty = true; }
+      if (nc.address && !prev.address) { next.address = nc.address; dirty = true; }
+      if (!prev._wsId)                 { next._wsId   = ws.id;      dirty = true; }
+      if (dirty) { clientMap.set(cid, next); changed = true; changedClientIds.add(cid); }
     }
   });
 
-  // ── 2단계: orders에 등장하는 미등록 거래처 추가 ─────────────────────────
+  // ── 2단계: orders 미등록 거래처 추가 ─────────────────────────────────────
   orders.forEach(o => {
     const nc      = napumClientById[String(o.clientId)];
     const crmName = o.clientName || nc?.name || '';
     if (!crmName || nameToId[crmName]) return;
     const newC = {
-      id: nextId(S.clients), name: crmName, bizNo: '', rep: '', email: '',
+      id: nextId([...clientMap.values()]), name: crmName, bizNo: '', rep: '', email: '',
       phone: nc?.phone || '', address: nc?.address || '', type: '매출처',
-      memo: `[${ws.label}] (주문에서 자동 추가)`,
+      memo: '[' + ws.label + '] (주문에서 자동 추가)',
       _wsId: ws.id,
     };
-    S.clients = [...S.clients, newC];
+    clientMap.set(newC.id, newC);
     nameToId[crmName] = newC.id; changed = true;
     changedClientIds.add(newC.id);
-    console.info('[실시간] orders에서 거래처 자동 추가:', crmName, ws.label);
   });
 
-  // ── 3단계: 주문 처리 (누락 없이 전체 반영) ──────────────────────────────
+  // ── 3단계: 거래 처리 — Map 직접 수정 (배열 재생성 없음) ──────────────────
   orders.forEach(o => {
     if (!o.date || !o.total) return;
     const nc          = napumClientById[String(o.clientId)];
     const crmName     = o.clientName || nc?.name || '';
     const crmClientId = nameToId[crmName];
-    if (!crmClientId) {
-      console.warn('[실시간] 거래처 매핑 실패 → 건너뜀', { orderId: o.id, clientId: o.clientId, crmName });
-      return;
-    }
+    if (!crmClientId) return;
 
-    const memoItems = (o.items || []).map(i => `${i.name}${i.qty > 1 ? ` ×${i.qty}` : ''}`).join(', ');
-    const memo      = `[${ws.label}]${o.isVoid ? ' [타인]' : ''} ${o.note || (memoItems || '납품')}`;
+    const memoItems = (o.items || []).map(i => i.name + (i.qty > 1 ? ' ×' + i.qty : '')).join(', ');
+    const memo      = '[' + ws.label + ']' + (o.isVoid ? ' [타인]' : '') + ' ' + (o.note || memoItems || '납품');
     const amount    = Number(o.total) || 0;
     const status    = o.isPaid ? TX_STATUS.PAID : TX_STATUS.UNPAID;
-    const napumKey  = `${ws.id}:${o.id}`;
+    const napumKey  = ws.id + ':' + o.id;
 
     if (napumIdToCrmId[napumKey]) {
-      // 기존 거래 업데이트
-      S.transactions = S.transactions.map(t => {
-        if (t.id !== napumIdToCrmId[napumKey]) return t;
-        const prev = JSON.stringify(t);
-        const next = { ...t, status, amount, tax: 0, memo };
-        if (o.items && o.items.length)  next.items            = o.items;            else delete next.items;
-        if (o.paidAmount)               next.paidAmount       = o.paidAmount;       else delete next.paidAmount;
-        // 완납→미수 복귀 시 명시적으로 삭제
-        if (o.paidAt)                   next.paidAt           = o.paidAt;           else delete next.paidAt;
-        if (o.paidMethod)               next.paidMethod       = o.paidMethod;       else delete next.paidMethod;
-        if (o.paidMethodDetail)         next.paidMethodDetail = o.paidMethodDetail; else delete next.paidMethodDetail;
-        if (JSON.stringify(next) !== prev) { changed = true; changedTxIds.add(t.id); }
-        return next;
-      });
-    } else {
-      // 신규 거래 추가 (중복 방지)
-      const alreadyExists = S.transactions.some(t => t._napumId === napumKey);
-      if (!alreadyExists) {
-        const newT = {
-          id: nextId(S.transactions), date: o.date, clientId: crmClientId,
-          type: '매출', amount, tax: 0, memo, status, _napumId: napumKey,
-        };
-        if (o.items && o.items.length)  newT.items            = o.items;
-        if (o.paidAmount)               newT.paidAmount       = o.paidAmount;
-        if (o.paidAt)                   newT.paidAt           = o.paidAt;
-        if (o.paidMethod)               newT.paidMethod       = o.paidMethod;
-        if (o.paidMethodDetail)         newT.paidMethodDetail = o.paidMethodDetail;
-        S.transactions = [...S.transactions, newT];
-        synced.add(napumKey); changed = true;
-        changedTxIds.add(newT.id);
+      const prev = txMap.get(napumIdToCrmId[napumKey]);
+      if (!prev) return;
+      const next = { ...prev, status, amount, tax: 0, memo };
+      if (o.items && o.items.length)  next.items            = o.items;            else delete next.items;
+      if (o.paidAmount)               next.paidAmount       = o.paidAmount;       else delete next.paidAmount;
+      if (o.paidAt)                   next.paidAt           = o.paidAt;           else delete next.paidAt;
+      if (o.paidMethod)               next.paidMethod       = o.paidMethod;       else delete next.paidMethod;
+      if (o.paidMethodDetail)         next.paidMethodDetail = o.paidMethodDetail; else delete next.paidMethodDetail;
+      if (JSON.stringify(next) !== JSON.stringify(prev)) {
+        txMap.set(next.id, next); changed = true; changedTxIds.add(next.id);
       }
+    } else {
+      const newT = {
+        id: nextId([...txMap.values()]), date: o.date, clientId: crmClientId,
+        type: '매출', amount, tax: 0, memo, status, _napumId: napumKey,
+      };
+      if (o.items && o.items.length)  newT.items            = o.items;
+      if (o.paidAmount)               newT.paidAmount       = o.paidAmount;
+      if (o.paidAt)                   newT.paidAt           = o.paidAt;
+      if (o.paidMethod)               newT.paidMethod       = o.paidMethod;
+      if (o.paidMethodDetail)         newT.paidMethodDetail = o.paidMethodDetail;
+      txMap.set(newT.id, newT);
+      napumIdToCrmId[napumKey] = newT.id;
+      synced.add(napumKey); changed = true;
+      changedTxIds.add(newT.id);
     }
   });
 
+  console.info('[납품싱크] 처리 결과:', ws.label,
+    '| changed:', changed,
+    '| 신규 거래처:', changedClientIds.size,
+    '| 신규/변경 거래:', changedTxIds.size,
+    '| CRM tx 최종:', txMap.size);
+
   if (changed) {
+    // Map → Array 역변환 (1회)
+    S.clients      = [...clientMap.values()].sort((a, b) => a.id - b.id);
+    S.transactions = [...txMap.values()].sort((a, b) => a.id - b.id);
     lsSet('crm_clients', S.clients);
     lsSet('crm_tx', S.transactions);
     lsSet('crm_napum_synced', [...synced]);
+
     (async () => {
       try {
-        // 전체 clients/transactions를 한 번에 set()하면 데이터가 많을 때
-        // 페이로드가 커져 모바일 네트워크에서 타임아웃이 빈발함.
-        // → 변경/추가된 항목만 건별 경로(clients/{id}, transactions/{id})로 저장
         const clientWrites = [...changedClientIds].map(id => {
           const c = S.clients.find(x => x.id === id);
           return c ? _saveOneClient(c) : Promise.resolve();
@@ -337,16 +339,15 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
         await Promise.all([...clientWrites, ...txWrites]);
       } catch (e) {
         console.error('[납품싱크] Firebase 저장 실패:', e);
-        showToast('⚠️ CRM 저장 실패 (로컬은 유지됨)');
       }
     })();
-    render();
-    // 자기 패치 echo인 경우 토스트 생략 (이미 _afterNapumPatch에서 표시함)
-    const isOwnEcho = orders.some(o => _napumOwnPatchKeys?.has(`${ws.id}:${o.id}`));
+
+    if (typeof render === 'function') render();
+    else console.warn('[납품싱크] render 함수 없음 — app.js 로드 확인 필요');
+    const isOwnEcho = orders.some(o => _napumOwnPatchKeys?.has(ws.id + ':' + o.id));
     if (!isOwnEcho) showToast('📦 납품 관리에서 업데이트됨');
   } else {
-    // changed=false여도 자기 패치 echo 콜백이면 화면 갱신 (결제 후 즉시 반영)
-    const isOwnEcho = orders.some(o => _napumOwnPatchKeys?.has(`${ws.id}:${o.id}`));
+    const isOwnEcho = orders.some(o => _napumOwnPatchKeys?.has(ws.id + ':' + o.id));
     if (isOwnEcho) render();
   }
 }
