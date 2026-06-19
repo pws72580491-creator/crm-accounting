@@ -541,13 +541,18 @@ async function doSyncFromDelivery() {
               const prev = txMap.get(napumIdToCrmId[napumKey]);
               if (!prev) return;
               const next = { ...prev, status, amount, tax: 0, memo };
-              if (o.paidAmount)       next.paidAmount       = o.paidAmount;       else delete next.paidAmount;
-              if (o.paidAt)           next.paidAt           = o.paidAt;           else delete next.paidAt;
-              if (o.paidMethod)       next.paidMethod       = o.paidMethod;       else delete next.paidMethod;
-              if (o.paidMethodDetail) next.paidMethodDetail = o.paidMethodDetail; else delete next.paidMethodDetail;
-              txMap.set(next.id, next);
-              wsUpdTx++; totalUpdTx++;
-              syncChangedTxIds.add(next.id);
+              if (o.items && o.items.length)  next.items            = o.items;            else delete next.items;
+              if (o.paidAmount)               next.paidAmount       = o.paidAmount;       else delete next.paidAmount;
+              if (o.paidAt)                   next.paidAt           = o.paidAt;           else delete next.paidAt;
+              if (o.paidMethod)               next.paidMethod       = o.paidMethod;       else delete next.paidMethod;
+              if (o.paidMethodDetail)         next.paidMethodDetail = o.paidMethodDetail; else delete next.paidMethodDetail;
+              // ★ 실제 변경된 경우만 changed로 표시 — 안 그러면 매번 전체 동기화 시
+              //   변경 없는 거래까지 전부 "업데이트"로 잡혀 불필요한 Firebase 쓰기 폭증
+              if (JSON.stringify(next) !== JSON.stringify(prev)) {
+                txMap.set(next.id, next);
+                wsUpdTx++; totalUpdTx++;
+                syncChangedTxIds.add(next.id);
+              }
             } else if (!napumIdToCrmId[napumKey]) {
               // 신규 거래 — txMap에 추가 (배열 스프레드 없음)
               const newT = {

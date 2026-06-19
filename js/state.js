@@ -259,20 +259,30 @@ function _attachListeners() {
   if (_offTX) { db.ref('transactions').off('value', _offTX); }
 
   _offC = db.ref('clients').on('value', snap => {
-    const arr = toArr(snap.val());
-    if (JSON.stringify(arr) === JSON.stringify(S.clients)) return;
-    S.clients = arr; lsSet('crm_clients', S.clients); render();
+    const fbArr = toArr(snap.val());
+    // 로컬에만 있는 항목(Firebase 미업로드) 보존
+    const fbIds       = new Set(fbArr.map(c => c.id));
+    const localOnly   = S.clients.filter(c => !fbIds.has(c.id));
+    const merged      = localOnly.length > 0 ? [...fbArr, ...localOnly] : fbArr;
+    if (JSON.stringify(merged) === JSON.stringify(S.clients)) return;
+    S.clients = merged; lsSet('crm_clients', S.clients); render();
+    // 로컬에만 있던 항목 Firebase 보충 업로드
+    if (localOnly.length > 0) {
+      localOnly.forEach(c => _fbWrite(db.ref('clients/' + c.id), { ...c, updatedAt: Date.now() }, 'listener:localOnlyClient'));
+    }
   }, e => console.warn('clients 리스너:', e));
 
   _offTX = db.ref('transactions').on('value', snap => {
     const incoming = toArr(snap.val());
-    // dlControlled 플래그가 있는 거래는 납품 관리 앱이 마지막으로 결제 처리한 것
-    // → CRM 로컬 값과 병합 시 결제 필드를 서버 값으로 우선 반영
+    // 로컬에만 있는 항목(납품 동기화 후 Firebase 미업로드) 보존
+    const fbTxIds    = new Set(incoming.map(t => t.id));
+    const localOnly  = S.transactions.filter(t => !fbTxIds.has(t.id));
+
+    // dlControlled 병합
     const merged = incoming.map(inTx => {
       if (!inTx.dlControlled) return inTx;
       const local = S.transactions.find(t => t.id === inTx.id);
       if (!local) return inTx;
-      // 납품 관리 앱이 결제 처리 → 로컬 base에 결제 필드만 덮어씀
       return {
         ...local,
         status:           inTx.status,
@@ -284,8 +294,15 @@ function _attachListeners() {
         dlControlled:     true,
       };
     });
-    if (JSON.stringify(merged) === JSON.stringify(S.transactions)) return;
-    S.transactions = merged; lsSet('crm_tx', S.transactions); render();
+
+    const finalArr = localOnly.length > 0 ? [...merged, ...localOnly] : merged;
+    if (JSON.stringify(finalArr) === JSON.stringify(S.transactions)) return;
+    S.transactions = finalArr; lsSet('crm_tx', S.transactions); render();
+    // 로컬에만 있던 항목 Firebase 보충 업로드
+    if (localOnly.length > 0) {
+      console.info('[리스너] 로컬 미업로드 거래 Firebase 보충:', localOnly.length, '건');
+      localOnly.forEach(t => _fbWrite(db.ref('transactions/' + t.id), { ...t, updatedAt: Date.now() }, 'listener:localOnlyTx'));
+    }
   }, e => console.warn('transactions 리스너:', e));
 }
 
@@ -485,20 +502,59 @@ async function loadData() {
     return;
   }
 
-  // 3) RTDB 최신 데이터 로드
+  // 3) RTDB 최신 데이터 로드 — 로컬 캐시와 병합 (로컬 우선)
+  // ★ 핵심: 납품 동기화 데이터는 비동기로 Firebase에 저장되므로
+  //   앱 재실행 시 Firebase에 아직 반영 안 된 데이터가 있을 수 있음.
+  //   로컬 캐시(lsGet)가 더 최신일 수 있으므로 단순 덮어쓰기 금지.
+  //   → 로컬과 Firebase를 병합: id 기준으로 로컬에만 있는 항목은 로컬 것 유지
   try {
     const [csSnap, txSnap] = await Promise.all([
       db.ref('clients').get(),
       db.ref('transactions').get(),
     ]);
-    const csVal = csSnap.val(), txVal = txSnap.val();
+    const csVal  = csSnap.val();
+    const txVal  = txSnap.val();
+
     if (csVal || txVal) {
-      S.clients      = toArr(csVal);
-      S.transactions = toArr(txVal);
+      const fbClients = toArr(csVal);
+      const fbTx      = toArr(txVal);
+
+      // 로컬에만 있는 항목(Firebase에 아직 미업로드) 보존
+      const fbClientIds = new Set(fbClients.map(c => c.id));
+      const fbTxIds     = new Set(fbTx.map(t => t.id));
+
+      const localOnlyClients = S.clients.filter(c => !fbClientIds.has(c.id));
+      const localOnlyTx      = S.transactions.filter(t => !fbTxIds.has(t.id));
+
+      if (localOnlyClients.length > 0 || localOnlyTx.length > 0) {
+        console.info('[loadData] 로컬 미업로드 항목 보존:',
+          '거래처', localOnlyClients.length, '건 | 거래', localOnlyTx.length, '건',
+          '→ Firebase에 추가 업로드');
+      }
+
+      S.clients      = [...fbClients, ...localOnlyClients];
+      S.transactions = [...fbTx,      ...localOnlyTx];
       lsSet('crm_clients', S.clients);
       lsSet('crm_tx', S.transactions);
+
+      // 로컬에만 있던 항목을 Firebase에 보충 업로드 (비동기, 화면 차단 없음)
+      if (localOnlyClients.length > 0 || localOnlyTx.length > 0) {
+        (async () => {
+          try {
+            await Promise.all([
+              ...localOnlyClients.map(c => _fbWrite(db.ref('clients/'      + c.id), { ...c, updatedAt: Date.now() }, 'loadData:localOnlyClient')),
+              ...localOnlyTx     .map(t => _fbWrite(db.ref('transactions/' + t.id), { ...t, updatedAt: Date.now() }, 'loadData:localOnlyTx')),
+            ]);
+            console.info('[loadData] 미업로드 항목 Firebase 보충 완료');
+          } catch (e) {
+            console.warn('[loadData] 미업로드 항목 보충 실패 (Write Queue에 등록됨):', e.message);
+          }
+        })();
+      }
+
       render();
     } else {
+      // Firebase가 비어있으면 로컬 데이터를 전체 업로드
       await _uploadAll();
     }
   } catch (e) {
