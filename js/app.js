@@ -684,20 +684,19 @@ function goToClientTx(clientId, isSales) {
   render();
 }
 // ── DASHBOARD PIN 잠금 시스템 ─────────────────────────────────────────────────
-const PIN_KEY      = 'crm_dash_pin';   // localStorage: SHA-256 해시 저장
+const PIN_KEY      = 'crm_dash_pin_v2'; // v2: SHA-256 해시 (v1 djb2와 키 분리 → 자동 초기화)
 const PIN_TS_KEY   = 'crm_dash_pin_ts'; // 마지막 인증 시각
 const PIN_TIMEOUT  = 5 * 60 * 1000;    // 5분 비활성 시 자동 잠금
 
-function _pinHash(pin) {
-  // 간단한 해시 (SHA-256 없이 빠른 djb2 변형)
-  let h = 5381;
-  for (let i = 0; i < pin.length; i++) h = (h * 33) ^ pin.charCodeAt(i);
-  return (h >>> 0).toString(16) + pin.length;
+async function _pinHash(pin) {
+  const enc  = new TextEncoder().encode(pin);
+  const buf  = await crypto.subtle.digest('SHA-256', enc);
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
 }
-function hasDashPin()    { return !!localStorage.getItem(PIN_KEY); }
-function checkDashPin(p) { return localStorage.getItem(PIN_KEY) === _pinHash(p); }
-function saveDashPin(p)  { localStorage.setItem(PIN_KEY, _pinHash(p)); localStorage.setItem(PIN_TS_KEY, '0'); }
-function clearDashPin()  { localStorage.removeItem(PIN_KEY); localStorage.removeItem(PIN_TS_KEY); S.dashLocked = false; }
+function hasDashPin()          { return !!localStorage.getItem(PIN_KEY); }
+async function checkDashPin(p) { return localStorage.getItem(PIN_KEY) === await _pinHash(p); }
+async function saveDashPin(p)  { localStorage.setItem(PIN_KEY, await _pinHash(p)); localStorage.setItem(PIN_TS_KEY, '0'); }
+function clearDashPin()        { localStorage.removeItem(PIN_KEY); localStorage.removeItem(PIN_TS_KEY); S.dashLocked = false; }
 function _stampPinAuth() { localStorage.setItem(PIN_TS_KEY, Date.now().toString()); }
 function _isPinExpired() {
   const ts = parseInt(localStorage.getItem(PIN_TS_KEY) || '0', 10);
@@ -751,12 +750,12 @@ function _pinBackspace() {
   renderModals();
 }
 
-function _pinSubmit() {
+async function _pinSubmit() {
   if (!_pinModal) return;
   const { mode, step, buf, first } = _pinModal;
 
   if (mode === 'unlock') {
-    if (checkDashPin(buf)) {
+    if (await checkDashPin(buf)) {
       _stampPinAuth(); S.dashLocked = false; closePinModal(); render();
       showToast('✅ 잠금이 해제됐습니다');
     } else {
@@ -765,7 +764,7 @@ function _pinSubmit() {
     return;
   }
   if (mode === 'remove') {
-    if (checkDashPin(buf)) {
+    if (await checkDashPin(buf)) {
       clearDashPin(); closePinModal(); render();
       showToast('🔓 PIN 잠금이 해제됐습니다');
     } else {
@@ -778,7 +777,7 @@ function _pinSubmit() {
       _pinModal.first = buf; _pinModal.buf = ''; _pinModal.step = 'confirm'; renderModals();
     } else {
       if (buf === first) {
-        saveDashPin(buf); closePinModal(); render(); showToast('🔑 PIN이 설정됐습니다');
+        await saveDashPin(buf); closePinModal(); render(); showToast('🔑 PIN이 설정됐습니다');
       } else {
         _pinModal.buf = ''; _pinModal.step = 'input'; _pinModal.first = '';
         renderModals(); showToast('❌ PIN이 일치하지 않습니다. 다시 입력하세요');
@@ -788,7 +787,7 @@ function _pinSubmit() {
   }
   if (mode === 'change') {
     if (step === 'input') {
-      if (checkDashPin(buf)) {
+      if (await checkDashPin(buf)) {
         _pinModal.step = 'new'; _pinModal.buf = ''; renderModals();
       } else {
         _pinModal.buf = ''; renderModals(); showToast('❌ PIN이 맞지 않습니다');
@@ -797,7 +796,7 @@ function _pinSubmit() {
       _pinModal.first = buf; _pinModal.buf = ''; _pinModal.step = 'confirm'; renderModals();
     } else {
       if (buf === first) {
-        saveDashPin(buf); closePinModal(); render(); showToast('🔑 PIN이 변경됐습니다');
+        await saveDashPin(buf); closePinModal(); render(); showToast('🔑 PIN이 변경됐습니다');
       } else {
         _pinModal.buf = ''; _pinModal.step = 'new'; _pinModal.first = '';
         renderModals(); showToast('❌ PIN이 일치하지 않습니다. 다시 입력하세요');
@@ -929,7 +928,7 @@ function submitClientModal(existId) {
 function confirmDelClient(id) {
   const c = S.clients.find(x => x.id === id);
   M.confirm = { msg:`"${c?.name}"을(를) 삭제하시겠습니까?\n관련 거래 내역도 함께 삭제됩니다.`, okStr:`deleteClient(${id})` };
-  M.clientModal = null; _pushModalHistory(); renderModals();
+  M.clientModal = null; renderModals(); // 히스토리 push 없이 닫기 (_pushModalHistory는 openClientModal에서 이미 호출됨)
 }
 
 function openTxModal(x) { M.txModal = x === 'add' ? 'add' : S.transactions.find(t => t.id === x); _pushModalHistory(); renderModals(); }
@@ -985,7 +984,7 @@ function submitTxModal(existId) {
 
 function confirmDelTx(id) {
   M.confirm = { msg:'이 거래를 삭제하시겠습니까?', okStr:`deleteTxFn(${id})` };
-  M.txModal = null; _pushModalHistory(); renderModals();
+  M.txModal = null; renderModals(); // 히스토리 push 없이 닫기 (openTxModal에서 이미 호출됨)
 }
 
 function onTxTaxType(type) {

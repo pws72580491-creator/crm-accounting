@@ -38,7 +38,7 @@ async function _patchNapumOrder(napumKey, patchObj) {
       atomicPatch[`workspaces/${wsId}/orders/${orderId}/${k}`] = patchObj[k];
     });
     atomicPatch[`workspaces/${wsId}/writtenBy`]   = 'CRM_EXTERNAL';
-    atomicPatch[`workspaces/${wsId}/lastUpdated`] = new Date(Date.now() + 1500).toISOString();
+    atomicPatch[`workspaces/${wsId}/lastUpdated`] = new Date().toISOString(); // 실제 현재 시각
     atomicPatch[`workspaces/${wsId}/_crmPatchAt`] = new Date().toISOString();
     await napumDb.ref('/').update(atomicPatch);
     console.info('납품 역방향 패치 성공:', napumKey, patchObj);
@@ -50,7 +50,8 @@ async function _patchNapumOrder(napumKey, patchObj) {
 }
 
 function _buildNapumPatch(crmTx) {
-  const isPaid = crmTx.status === TX_STATUS.PAID;
+  // PAID(매출 완납) 또는 BILLED(매입 지급완료) 모두 isPaid=true로 전송
+  const isPaid = crmTx.status === TX_STATUS.PAID || crmTx.status === TX_STATUS.BILLED;
   const patch = {
     isPaid,
     paidAmount:    crmTx.paidAmount || 0,
@@ -286,12 +287,18 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
     if (napumIdToCrmId[napumKey]) {
       const prev = txMap.get(napumIdToCrmId[napumKey]);
       if (!prev) return;
-      const next = { ...prev, status, amount, tax: 0, memo };
+      // ★ CRM이 결제 처리한 거래(crmControlled)는 status·결제 필드를 납품 앱 스냅샷이 덮어쓰지 않음
+      //   (amount·memo·items는 납품 앱 원본 기준으로 계속 업데이트)
+      const next = prev.crmControlled
+        ? { ...prev, amount, tax: 0, memo }  // 결제 필드 보존
+        : { ...prev, status, amount, tax: 0, memo }; // 기존 동작
       if (o.items && o.items.length)  next.items            = o.items;            else delete next.items;
-      if (o.paidAmount)               next.paidAmount       = o.paidAmount;       else delete next.paidAmount;
-      if (o.paidAt)                   next.paidAt           = o.paidAt;           else delete next.paidAt;
-      if (o.paidMethod)               next.paidMethod       = o.paidMethod;       else delete next.paidMethod;
-      if (o.paidMethodDetail)         next.paidMethodDetail = o.paidMethodDetail; else delete next.paidMethodDetail;
+      if (!prev.crmControlled) {
+        if (o.paidAmount)               next.paidAmount       = o.paidAmount;       else delete next.paidAmount;
+        if (o.paidAt)                   next.paidAt           = o.paidAt;           else delete next.paidAt;
+        if (o.paidMethod)               next.paidMethod       = o.paidMethod;       else delete next.paidMethod;
+        if (o.paidMethodDetail)         next.paidMethodDetail = o.paidMethodDetail; else delete next.paidMethodDetail;
+      }
       if (JSON.stringify(next) !== JSON.stringify(prev)) {
         txMap.set(next.id, next); changed = true; changedTxIds.add(next.id);
       }
@@ -468,8 +475,24 @@ async function doSyncFromDelivery() {
         }
 
         const napumClientsRaw = csSnap.val() || {};
-        const napumClients    = Object.values(napumClientsRaw);
-        const napumOrders     = Object.values(ordSnap.val() || {});
+        let   napumClients    = Object.values(napumClientsRaw);
+        let   napumOrders     = Object.values(ordSnap.val() || {});
+
+        // ── 타인 워크스페이스 sharedClients 필터 (_loadStatOrders, 실시간 리스너와 동일 기준) ──
+        const selfWsIds = new Set(_getWorkspaces().map(w => w.id));
+        const isSelfWs  = selfWsIds.has(ws.id);
+        if (!isSelfWs) {
+          const scSnap       = await napumDb.ref(`workspaces/${ws.id}/sharedClients`).get();
+          const allowedNames = scSnap.exists() ? (scSnap.val() || []) : [];
+          if (allowedNames.length === 0) {
+            // 공개 거래처 미설정 → 전체 차단
+            perWorkspace.push({ ...ws, error: false, newTx: 0, skipped: true });
+            wsListUpdated[i] = { ...ws, lastSync: '공개 거래처 없음', syncedCount: 0 };
+            continue;
+          }
+          napumClients = napumClients.filter(nc => allowedNames.includes(nc.name));
+          napumOrders  = napumOrders.filter(o  => allowedNames.includes(o.clientName));
+        }
 
         const napumClientById = {};
         napumClients.forEach(nc => { if (nc.id != null) napumClientById[String(nc.id)] = nc; });
@@ -540,19 +563,19 @@ async function doSyncFromDelivery() {
               // 기존 거래 업데이트 — txMap에서 직접 수정 (배열 재생성 없음)
               const prev = txMap.get(napumIdToCrmId[napumKey]);
               if (!prev) return;
-              const next = { ...prev, status, amount, tax: 0, memo };
-              if (o.items && o.items.length)  next.items            = o.items;            else delete next.items;
-              if (o.paidAmount)               next.paidAmount       = o.paidAmount;       else delete next.paidAmount;
-              if (o.paidAt)                   next.paidAt           = o.paidAt;           else delete next.paidAt;
-              if (o.paidMethod)               next.paidMethod       = o.paidMethod;       else delete next.paidMethod;
-              if (o.paidMethodDetail)         next.paidMethodDetail = o.paidMethodDetail; else delete next.paidMethodDetail;
-              // ★ 실제 변경된 경우만 changed로 표시 — 안 그러면 매번 전체 동기화 시
-              //   변경 없는 거래까지 전부 "업데이트"로 잡혀 불필요한 Firebase 쓰기 폭증
-              if (JSON.stringify(next) !== JSON.stringify(prev)) {
-                txMap.set(next.id, next);
-                wsUpdTx++; totalUpdTx++;
-                syncChangedTxIds.add(next.id);
+              // ★ crmControlled 거래는 결제 필드 보존
+              const next = prev.crmControlled
+                ? { ...prev, amount, tax: 0, memo }
+                : { ...prev, status, amount, tax: 0, memo };
+              if (!prev.crmControlled) {
+                if (o.paidAmount)       next.paidAmount       = o.paidAmount;       else delete next.paidAmount;
+                if (o.paidAt)           next.paidAt           = o.paidAt;           else delete next.paidAt;
+                if (o.paidMethod)       next.paidMethod       = o.paidMethod;       else delete next.paidMethod;
+                if (o.paidMethodDetail) next.paidMethodDetail = o.paidMethodDetail; else delete next.paidMethodDetail;
               }
+              txMap.set(next.id, next);
+              wsUpdTx++; totalUpdTx++;
+              syncChangedTxIds.add(next.id);
             } else if (!napumIdToCrmId[napumKey]) {
               // 신규 거래 — txMap에 추가 (배열 스프레드 없음)
               const newT = {
@@ -707,7 +730,8 @@ async function _loadStatOrders() {
         if (!isSelfWs) {
           const scSnap       = await napumDb.ref(`workspaces/${ws.id}/sharedClients`).get();
           const allowedNames = scSnap.exists() ? (scSnap.val() || []) : [];
-          if (allowedNames.length > 0 && !allowedNames.includes(sm.clientName)) return;
+          // 빈 배열(공개 거래처 미설정) → 실시간 리스너와 동일하게 전체 차단
+          if (allowedNames.length === 0 || !allowedNames.includes(sm.clientName)) return;
         }
         const snap   = await napumDb.ref(`workspaces/${ws.id}/orders`).get();
         const orders = Object.values(snap.val() || {});
@@ -757,8 +781,8 @@ function shareStatModal(type) {
   lines.push(`🧾 청구 금액: ${fmtW(grandUnpaid)}`);
   lines.push('');
   lines.push('🏦 입금 계좌');
-  lines.push('농협 916-02-055664');
-  lines.push('예금주: 이애경');
+  lines.push(`${ACCOUNT_INFO.bank} ${ACCOUNT_INFO.number}`);
+  lines.push(`예금주: ${ACCOUNT_INFO.holder}`);
 
   const text = lines.join('\n');
 

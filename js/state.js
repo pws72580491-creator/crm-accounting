@@ -426,9 +426,10 @@ async function _refetchNapumOrderAfterPatch(napumKey) {
       if (t._napumId !== napumKey) return t;
       const prev  = JSON.stringify(t);
       const next  = { ...t,
+        // 매입 거래(type==='매입')는 BILLED/UNBILLED, 매출은 PAID/UNPAID
         status:     order.isPaid
-          ? (t.status === TX_STATUS.UNBILLED ? TX_STATUS.BILLED : TX_STATUS.PAID)
-          : TX_STATUS.UNPAID,
+          ? (t.type === '매입' ? TX_STATUS.BILLED  : TX_STATUS.PAID)
+          : (t.type === '매입' ? TX_STATUS.UNBILLED : TX_STATUS.UNPAID),
         paidAmount: order.paidAmount !== undefined ? order.paidAmount : t.paidAmount,
         paidAt:     order.paidAt    !== undefined ? order.paidAt    : t.paidAt,
         paidMethod: order.paidMethod !== undefined ? order.paidMethod : t.paidMethod,
@@ -644,6 +645,7 @@ function importData() {
         const validT = data.transactions.filter(t => t.id && t.clientId && t.date && t.type && typeof t.amount === 'number');
         if (!confirm(`거래처 ${validC.length}개, 거래 ${validT.length}건을 불러옵니다.\n현재 데이터는 덮어씌워집니다. 계속할까요?`)) return;
         S.clients = validC; S.transactions = validT;
+        lsSet('crm_napum_synced', []); // _napumId 거래 재동기화 방지를 위해 초기화
         await saveC(); await saveTX();
         render(); showToast('데이터를 불러왔습니다.');
       } catch (err) { showToast('파일을 읽는 중 오류가 발생했습니다.'); }
