@@ -299,8 +299,6 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
         if (o.paidMethod)               next.paidMethod       = o.paidMethod;       else delete next.paidMethod;
         if (o.paidMethodDetail)         next.paidMethodDetail = o.paidMethodDetail; else delete next.paidMethodDetail;
       }
-      // ★ 납품 order의 crmControlled 플래그를 CRM tx에도 반영 (다음 스냅샷부터 보호 로직 발동)
-      next.crmControlled = o.crmControlled === true;
       if (JSON.stringify(next) !== JSON.stringify(prev)) {
         txMap.set(next.id, next); changed = true; changedTxIds.add(next.id);
       }
@@ -314,7 +312,6 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
       if (o.paidAt)                   newT.paidAt           = o.paidAt;
       if (o.paidMethod)               newT.paidMethod       = o.paidMethod;
       if (o.paidMethodDetail)         newT.paidMethodDetail = o.paidMethodDetail;
-      if (o.crmControlled === true)   newT.crmControlled    = true;
       txMap.set(newT.id, newT);
       napumIdToCrmId[napumKey] = newT.id;
       synced.add(napumKey); changed = true;
@@ -576,8 +573,6 @@ async function doSyncFromDelivery() {
                 if (o.paidMethod)       next.paidMethod       = o.paidMethod;       else delete next.paidMethod;
                 if (o.paidMethodDetail) next.paidMethodDetail = o.paidMethodDetail; else delete next.paidMethodDetail;
               }
-              // ★ 납품 order의 crmControlled 플래그를 CRM tx에도 반영
-              next.crmControlled = o.crmControlled === true;
               txMap.set(next.id, next);
               wsUpdTx++; totalUpdTx++;
               syncChangedTxIds.add(next.id);
@@ -592,7 +587,6 @@ async function doSyncFromDelivery() {
               if (o.paidAt)                   newT.paidAt           = o.paidAt;
               if (o.paidMethod)               newT.paidMethod       = o.paidMethod;
               if (o.paidMethodDetail)         newT.paidMethodDetail = o.paidMethodDetail;
-              if (o.crmControlled === true)   newT.crmControlled    = true;
               txMap.set(newT.id, newT);
               napumIdToCrmId[napumKey] = newT.id; // 중복 방지
               synced.add(napumKey); wsNewTx++; totalNewTx++;
