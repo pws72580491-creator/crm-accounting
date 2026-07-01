@@ -433,6 +433,9 @@ async function _refetchNapumOrderAfterPatch(napumKey) {
         paidAmount: order.paidAmount !== undefined ? order.paidAmount : t.paidAmount,
         paidAt:     order.paidAt    !== undefined ? order.paidAt    : t.paidAt,
         paidMethod: order.paidMethod !== undefined ? order.paidMethod : t.paidMethod,
+        // ★ 납품 order에 기록된 crmControlled 플래그를 CRM tx로도 반영
+        //   (이게 없으면 napum.js의 crmControlled 보호 로직이 절대 발동하지 않음)
+        crmControlled: order.crmControlled === true,
       };
       // 완납 취소 시 결제 관련 필드 명시적 삭제
       if (!order.isPaid) {
