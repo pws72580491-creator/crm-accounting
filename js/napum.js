@@ -286,18 +286,19 @@ async function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allow
     const chunk = orders.slice(_ci, _ci + _ORDER_CHUNK);
     chunk.forEach(o => {
       if (!o.date || !o.total) return;
-      const nc          = napumClientById[String(o.clientId)];
-      const crmName     = o.clientName || nc?.name || '';
-      const crmClientId = nameToId[crmName];
-      if (!crmClientId) return;
+      const napumKey  = ws.id + ':' + o.id;
 
       const memoItems = (o.items || []).map(i => i.name + (i.qty > 1 ? ' ×' + i.qty : '')).join(', ');
       const memo      = '[' + ws.label + ']' + (o.isVoid ? ' [타인]' : '') + ' ' + (o.note || memoItems || '납품');
       const amount    = Number(o.total) || 0;
       const status    = o.isPaid ? TX_STATUS.PAID : TX_STATUS.UNPAID;
-      const napumKey  = ws.id + ':' + o.id;
 
       if (napumIdToCrmId[napumKey]) {
+        // ★ 이미 _napumId로 연동된 거래는 거래처명 재매칭 없이 항상 업데이트한다.
+        //   (거래처명이 조금이라도 다르면 — 공백, 표기 차이, 납품 앱 측 개명 등 —
+        //    아래 else 분기의 nameToId 조회가 실패해 "이미 연동된" 거래조차
+        //    영원히 업데이트가 스킵되는 버그가 있었음. 연동된 거래는 clientId를
+        //    이미 알고 있으므로 이름 재조회가 아예 필요 없다.)
         const prev = txMap.get(napumIdToCrmId[napumKey]);
         if (!prev) return;
         // ★ CRM이 결제 처리한 거래(crmControlled)는 status·결제 필드를 납품 앱 스냅샷이 덮어쓰지 않음
@@ -316,6 +317,14 @@ async function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allow
           txMap.set(next.id, next); changed = true; changedTxIds.add(next.id);
         }
       } else {
+        // 신규 거래 — 이때만 거래처명으로 매칭/생성이 필요
+        const nc          = napumClientById[String(o.clientId)];
+        const crmName     = o.clientName || nc?.name || '';
+        const crmClientId = nameToId[crmName];
+        if (!crmClientId) {
+          console.warn('[납품싱크] 거래처명 매칭 실패로 신규 거래 스킵:', ws.label, '| clientName:', crmName, '| orderId:', o.id);
+          return;
+        }
         const newT = {
           id: nextId([...txMap.values()]), date: o.date, clientId: crmClientId,
           type: '매출', amount, tax: 0, memo, status, _napumId: napumKey,
@@ -564,19 +573,16 @@ async function doSyncFromDelivery() {
 
           chunk.forEach(o => {
             if (!o.date || !o.total) return;
-            const nc          = napumClientById[String(o.clientId)];
-            const crmName     = o.clientName || nc?.name || '';
-            const crmClientId = nameToId[crmName];
-            if (!crmClientId) return;
+            const napumKey  = `${ws.id}:${o.id}`;
 
             const memoItems = (o.items || []).map(it => `${it.name}${it.qty > 1 ? ` ×${it.qty}` : ''}`).join(', ');
             const memo      = `[${ws.label}]${o.isVoid ? ' [타인]' : ''} ${o.note || (memoItems || '납품')}`;
             const amount    = Number(o.total) || 0;
             const status    = o.isPaid ? TX_STATUS.PAID : TX_STATUS.UNPAID;
-            const napumKey  = `${ws.id}:${o.id}`;
 
             if (napumIdToCrmId[napumKey]) {
-              // 기존 거래 업데이트 — txMap에서 직접 수정 (배열 재생성 없음)
+              // ★ 이미 연동된 거래는 거래처명 재매칭 없이 항상 업데이트 (아래 else의 nameToId
+              //   조회가 실패해도 — 거래처명 표기 차이 등 — 기존 연동은 절대 끊기지 않음)
               const prev = txMap.get(napumIdToCrmId[napumKey]);
               if (!prev) return;
               // ★ crmControlled 거래는 결제 필드 보존
@@ -592,8 +598,12 @@ async function doSyncFromDelivery() {
               txMap.set(next.id, next);
               wsUpdTx++; totalUpdTx++;
               syncChangedTxIds.add(next.id);
-            } else if (!napumIdToCrmId[napumKey]) {
-              // 신규 거래 — txMap에 추가 (배열 스프레드 없음)
+            } else {
+              // 신규 거래 — 이때만 거래처명으로 매칭/생성 필요
+              const nc          = napumClientById[String(o.clientId)];
+              const crmName     = o.clientName || nc?.name || '';
+              const crmClientId = nameToId[crmName];
+              if (!crmClientId) return;
               const newT = {
                 id: nextId([...txMap.values()]), date: o.date, clientId: crmClientId,
                 type: '매출', amount, tax: 0, memo, status, _napumId: napumKey,

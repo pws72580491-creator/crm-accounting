@@ -39,6 +39,13 @@ function sidebarInner(onClose = '') {
         </button>
         <div style="display:none;margin-top:6px;max-height:220px;overflow-y:auto;font-size:10px;color:#94a3b8;line-height:1.6;">
           <div style="margin-bottom:8px;">
+            <span style="color:#34d399;font-weight:700;">v7.5</span>
+            <ul style="margin:3px 0 0 12px;padding:0;list-style:disc;">
+              <li>🐛 납품 관리에서 완납 처리해도 CRM에는 미수금으로 계속 남던 버그 수정 — 이미 연동된(_napumId) 거래는 거래처명 재매칭 없이 항상 상태가 갱신되도록 처리 순서 변경 (거래처명 표기 차이가 있으면 연동된 거래조차 업데이트가 통째로 스킵되던 구조적 결함)</li>
+              <li>실시간 리스너·수동 전체 동기화 양쪽 모두 동일하게 수정</li>
+            </ul>
+          </div>
+          <div style="margin-bottom:8px;">
             <span style="color:#34d399;font-weight:700;">v7.4</span>
             <ul style="margin:3px 0 0 12px;padding:0;list-style:disc;">
               <li>🐢→⚡ 납품 관리 실시간 동기화 시 화면이 멈추던 현상 수정 — 주문 처리를 200건 단위 청크로 분할, 매 청크마다 UI 숨 쉴 틈 확보</li>
@@ -225,6 +232,7 @@ function buildTxModal() {
       <div style="grid-column:1/-1;"><label style="font-size:12px;color:#64748b;">상태</label><div style="margin-top:4px;"><select id="tf_status" style="${ISX}">${stOpts}</select></div></div>
     </div>
     ${preview}
+    ${isEd && f._napumId ? `<div style="margin-top:10px;padding:8px 10px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:8px;font-size:10px;color:#94a3b8;line-height:1.5;">📦 납품 연동: <span style="font-family:monospace;">${esc(f._napumId)}</span>${f.crmControlled ? ' · <span style="color:#d97706;">CRM 우선권(crmControlled)</span>' : ''}</div>` : ''}
     <div style="display:flex;gap:8px;margin-top:16px;">
       <button onclick="closeTxModal()" style="flex:1;padding:10px 0;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:8px;font-size:13px;cursor:pointer;">취소</button>
       <button onclick="submitTxModal(${isEd?f.id:'null'})" style="flex:1;padding:10px 0;background:#d97706;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;">저장</button>
