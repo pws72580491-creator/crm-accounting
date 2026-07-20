@@ -39,7 +39,34 @@ function sidebarInner(onClose = '') {
         </button>
         <div style="display:none;margin-top:6px;max-height:220px;overflow-y:auto;font-size:10px;color:#94a3b8;line-height:1.6;">
           <div style="margin-bottom:8px;">
-            <span style="color:#34d399;font-weight:700;">v7.0</span>
+            <span style="color:#34d399;font-weight:700;">v7.4</span>
+            <ul style="margin:3px 0 0 12px;padding:0;list-style:disc;">
+              <li>🐢→⚡ 납품 관리 실시간 동기화 시 화면이 멈추던 현상 수정 — 주문 처리를 200건 단위 청크로 분할, 매 청크마다 UI 숨 쉴 틈 확보</li>
+              <li>연속 스냅샷 도착 시 이전 처리를 안전하게 중단하는 토큰 로직 추가 (중복 처리 방지)</li>
+            </ul>
+          </div>
+          <div style="margin-bottom:8px;">
+            <span style="color:#94a3b8;font-weight:700;">v7.3</span>
+            <ul style="margin:3px 0 0 12px;padding:0;list-style:disc;">
+              <li>🧹 죽은 코드 정리: 미사용 함수(completeStatus), 미사용 CSS 클래스(.g4/.dash-layout/.dash-right/.dash-right-inner/.th/.td), 미사용 아이콘(check), 아무도 읽지 않던 마이그레이션 플래그(crm_napum_void_migrated_v1 쓰기) 제거</li>
+            </ul>
+          </div>
+          <div style="margin-bottom:8px;">
+            <span style="color:#94a3b8;font-weight:700;">v7.2</span>
+            <ul style="margin:3px 0 0 12px;padding:0;list-style:disc;">
+              <li>🗑️ AI 영수증 스캔 기능 완전 제거 (OpenRouter 연동/키, 프록시 스크립트, 관련 UI·상태 전부 삭제)</li>
+            </ul>
+          </div>
+          <div style="margin-bottom:8px;">
+            <span style="color:#94a3b8;font-weight:700;">v7.1</span>
+            <ul style="margin:3px 0 0 12px;padding:0;list-style:disc;">
+              <li>🔒 PIN 잠금 범위 확대 — 대시보드 탭에만 걸리던 것을 전체 탭(거래처/거래내역/채권채무)으로 확장</li>
+              <li>🔑 AI 영수증 스캔 프록시 지원 (SCAN_PROXY_URL) — 설정 시 OpenRouter 키가 클라이언트에 노출되지 않음</li>
+              <li>openrouter-proxy-worker.js 추가 (Cloudflare Worker 배포용 프록시 스크립트)</li>
+            </ul>
+          </div>
+          <div style="margin-bottom:8px;">
+            <span style="color:#94a3b8;font-weight:700;">v7.0</span>
             <ul style="margin:3px 0 0 12px;padding:0;list-style:disc;">
               <li>Write Queue 도입 — 오프라인 저장 후 복구 시 자동 재전송</li>
               <li>_fbWrite() 래퍼 — 네트워크 오류 시 1.5초 재시도 + 대기열</li>
@@ -204,200 +231,6 @@ function buildTxModal() {
     </div>`;
   return modalWrap(isEd ? '거래 수정' : '거래 추가', 'closeTxModal()', 480, content);
 }
-
-// ── AI 영수증 스캔 ─────────────────────────────────────────────────────────────
-function openScanInput() {
-  const proto = location.protocol;
-  if (proto === 'file:' || proto === 'content:' || proto === 'blob:') {
-    M.scanModal = { state:'localfile', previewUrl:null, base64:null, mediaType:null, result:null, error:null };
-    _pushModalHistory(); renderModals(); return;
-  }
-  const input = document.createElement('input');
-  input.type = 'file'; input.accept = 'image/*'; input.capture = 'environment'; input.style.display = 'none';
-  document.body.appendChild(input);
-  input.onchange = async e => {
-    const file = e.target.files[0];
-    document.body.removeChild(input);
-    if (!file) return;
-    if (file.size > 5 * 1024 * 1024) { showToast('이미지가 너무 큽니다. (최대 5MB)'); return; }
-    await runScan(file);
-  };
-  input.click();
-}
-
-async function runScan(file) {
-  const previewUrl = URL.createObjectURL(file);
-  const base64 = await new Promise((res, rej) => {
-    const r = new FileReader();
-    r.onload  = () => res(r.result.split(',')[1]);
-    r.onerror = () => rej(new Error('read failed'));
-    r.readAsDataURL(file);
-  });
-  const mediaType = file.type || 'image/jpeg';
-  M.scanModal = { state:'loading', previewUrl, base64, mediaType, result:null, error:null };
-  renderModals();
-
-  try {
-    if (!OPENROUTER_API_KEY) throw new Error('OpenRouter API 키가 설정되지 않았습니다.');
-    const prompt = `이 이미지는 영수증, 세금계산서, 청구서, 거래명세서 등 매입 관련 문서입니다.
-이미지를 분석하여 아래 JSON 형식으로만 응답하세요. 마크다운 코드블록 없이 JSON만 출력하세요.
-
-{
-  "supplierName": "공급자(판매처) 상호명. 없으면 null",
-  "date": "거래일자 YYYY-MM-DD 형식. 없으면 오늘 날짜",
-  "amount": "공급가액(세금 제외) 숫자만. 없으면 0",
-  "tax": "부가세액 숫자만. 없으면 0",
-  "memo": "품목이나 거래내용 요약 (50자 이내)",
-  "confidence": "분석 신뢰도 high/medium/low",
-  "note": "사용자에게 전달할 참고사항 (한국어, 없으면 null)"
-}
-
-규칙:
-- amount와 tax는 콤마 없는 정수
-- 세금계산서면 공급가액과 세액을 분리
-- 영수증(부가세 포함가)이면 amount=총액÷1.1 반올림, tax=총액-amount
-- 날짜를 읽기 어려우면 오늘(${localDate()}) 사용
-- 문서가 아닌 이미지면 confidence=low, note에 설명`;
-
-    const resp = await fetch('https://openrouter.ai/api/v1/chat/completions', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-        'HTTP-Referer': location.origin,
-      },
-      body: JSON.stringify({
-        model: 'google/gemini-2.0-flash-exp:free',
-        max_tokens: 1000,
-        messages: [{ role: 'user', content: [
-          { type: 'image_url', image_url: { url: `data:${mediaType};base64,${base64}` } },
-          { type: 'text', text: prompt }
-        ]}],
-      }),
-    });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      throw new Error(err?.error?.message || `API 오류 ${resp.status}`);
-    }
-    const data   = await resp.json();
-    const raw    = data.choices?.[0]?.message?.content || '{}';
-    const clean  = raw.replace(/```[a-z]*\n?/g, '').replace(/```/g, '').trim();
-    const parsed = JSON.parse(clean);
-    M.scanModal = { state:'done', previewUrl, base64, mediaType, result:parsed, error:null };
-  } catch (err) {
-    M.scanModal = { state:'error', previewUrl, base64, mediaType, result:null, error: err.message || '분석 실패' };
-  }
-  renderModals();
-}
-
-function buildScanModal() {
-  const m = M.scanModal; if (!m) return '';
-
-  if (m.state === 'localfile') {
-    return modalWrap('AI 영수증 스캔 사용법', 'closeScanModal()', 500, `
-      <div style="text-align:center;padding:8px 0 20px;">
-        <div style="font-size:40px;margin-bottom:12px;">🌐</div>
-        <div style="color:#0f172a;font-weight:700;font-size:16px;margin-bottom:8px;">웹 서버 호스팅이 필요합니다</div>
-        <div style="color:#64748b;font-size:13px;line-height:1.6;margin-bottom:20px;">AI 스캔 기능은 외부 API를 호출하기 때문에<br>로컬 파일에서는 보안상 차단됩니다.</div>
-      </div>
-      <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:20px;">
-        <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:10px;padding:14px;">
-          <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;"><span style="background:#16a34a;color:#fff;font-size:11px;font-weight:700;padding:2px 8px;border-radius:9999px;">추천</span><span style="color:#16a34a;font-weight:700;font-size:13px;">GitHub Pages (무료·영구)</span></div>
-          <ol style="color:#334155;font-size:12px;line-height:2;padding-left:18px;margin:0;"><li>github.com 가입 → 새 저장소 생성</li><li>HTML 파일 업로드</li><li>Settings → Pages → Branch: main → Save</li></ol>
-        </div>
-        <div style="background:#fefce8;border:1px solid #fef08a;border-radius:10px;padding:12px;">
-          <div style="color:#b45309;font-size:12px;line-height:1.7;">⚠️ <strong>다른 기능은 영향 없음</strong> — 거래처 관리, 거래 내역, 채권·채무, JSON 저장/불러오기는 로컬 파일에서도 정상 작동합니다.</div>
-        </div>
-      </div>
-      <button type="button" onclick="closeScanModal()" style="width:100%;padding:11px 0;background:#d97706;color:#fff;border:none;border-radius:8px;font-size:14px;font-weight:700;cursor:pointer;">확인</button>`);
-  }
-  if (m.state === 'loading') {
-    return modalWrap('AI 영수증 분석', 'closeScanModal()', 480, `
-      <div style="text-align:center;padding:32px 0;">
-        <div style="margin:0 auto 18px;width:52px;height:52px;border:3px solid #e2e8f0;border-top-color:#d97706;border-radius:50%;animation:spin .8s linear infinite;"></div>
-        <div style="color:#0f172a;font-weight:600;margin-bottom:6px;">이미지 분석 중…</div>
-        <div style="color:#94a3b8;font-size:12px;">Claude AI가 거래 정보를 읽고 있습니다</div>
-      </div>
-      <style>@keyframes spin{to{transform:rotate(360deg);}}</style>`);
-  }
-  if (m.state === 'error') {
-    return modalWrap('AI 영수증 분석', 'closeScanModal()', 480, `
-      <div style="text-align:center;padding:24px 0;">
-        <div style="font-size:36px;margin-bottom:12px;">⚠️</div>
-        <div style="color:#dc2626;font-weight:600;margin-bottom:8px;">분석 실패</div>
-        <div style="color:#64748b;font-size:13px;margin-bottom:20px;">${esc(m.error)}</div>
-        <div style="display:flex;gap:8px;justify-content:center;">
-          <button type="button" onclick="closeScanModal()" style="padding:9px 20px;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:8px;font-size:13px;cursor:pointer;">닫기</button>
-          <button type="button" onclick="openScanInput()" style="padding:9px 20px;background:#d97706;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;">다시 촬영</button>
-        </div>
-      </div>`);
-  }
-
-  const r          = m.result || {};
-  const confColor  = r.confidence === 'high' ? '#16a34a' : r.confidence === 'medium' ? '#b45309' : '#dc2626';
-  const confLabel  = r.confidence === 'high' ? '높음' : r.confidence === 'medium' ? '보통' : '낮음';
-  const total      = (+r.amount || 0) + (+r.tax || 0);
-  const matchedClient = r.supplierName ? S.clients.find(c => c.type === '매입처' && c.name.includes(r.supplierName?.slice(0, 2))) : null;
-  const clientOpts = S.clients.map(c => `<option value="${c.id}" ${matchedClient?.id === c.id ? 'selected' : ''}>${esc(c.name)} (${esc(c.type)})</option>`).join('');
-
-  return modalWrap('AI 영수증 분석 결과', 'closeScanModal()', 520, `
-    <div style="display:flex;gap:12px;align-items:flex-start;margin-bottom:16px;">
-      <img src="${m.previewUrl}" alt="영수증" style="width:80px;height:80px;object-fit:cover;border-radius:8px;border:1px solid #e2e8f0;flex-shrink:0;">
-      <div style="flex:1;min-width:0;">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px;">
-          <span style="color:#0f172a;font-weight:600;font-size:14px;">분석 완료</span>
-          <span style="background:${confColor}18;border:1px solid ${confColor}40;color:${confColor};font-size:11px;padding:1px 8px;border-radius:9999px;font-weight:600;">신뢰도 ${confLabel}</span>
-        </div>
-        ${r.note ? `<div style="color:#64748b;font-size:12px;background:#f8fafc;border-radius:6px;padding:7px 10px;border-left:3px solid #d97706;">${esc(r.note)}</div>` : ''}
-        ${total > 0 ? `<div style="color:#1d4ed8;font-size:13px;font-weight:700;margin-top:6px;">합계 ${fmtW(total)}</div>` : ''}
-      </div>
-    </div>
-    <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:10px;padding:14px;margin-bottom:14px;">
-      <div style="color:#475569;font-size:11px;font-weight:600;margin-bottom:10px;display:flex;align-items:center;gap:5px;">${I.spark} 추출된 정보 (수정 가능)</div>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
-        <div style="grid-column:1/-1;"><label style="font-size:11px;color:#64748b;">거래처</label><select id="sc_clientId" style="${ISX}margin-top:3px;font-size:14px;"><option value="">-- 선택 --</option>${clientOpts}</select>${r.supplierName?`<div style="color:#94a3b8;font-size:10px;margin-top:3px;">📷 인식된 상호: ${esc(r.supplierName)}</div>`:''}</div>
-        <div><label style="font-size:11px;color:#64748b;">거래일자</label><input id="sc_date" type="date" value="${esc(r.date||localDate())}" style="${ISX}margin-top:3px;"></div>
-        <div><label style="font-size:11px;color:#64748b;">공급가액</label><input id="sc_amount" type="text" value="${fmt(+r.amount||0)}" oninput="applyAmtFmt(this);scUpdateTotal()" style="${ISX}margin-top:3px;"></div>
-        <div><label style="font-size:11px;color:#64748b;">세액</label><input id="sc_tax" type="text" value="${fmt(+r.tax||0)}" oninput="applyAmtFmt(this);scUpdateTotal()" style="${ISX}margin-top:3px;"></div>
-        <div style="grid-column:1/-1;"><label style="font-size:11px;color:#64748b;">적요</label><input id="sc_memo" type="text" value="${esc(r.memo||'')}" placeholder="거래 내용" style="${ISX}margin-top:3px;"></div>
-      </div>
-      <div id="scTotal" style="margin-top:10px;"></div>
-    </div>
-    <div style="display:flex;gap:8px;">
-      <button type="button" onclick="openScanInput()" style="padding:10px 14px;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:8px;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:5px;">${I.camera} 재촬영</button>
-      <button type="button" onclick="closeScanModal()" style="flex:1;padding:10px 0;border:1px solid #e2e8f0;background:#f8fafc;color:#64748b;border-radius:8px;font-size:13px;cursor:pointer;">취소</button>
-      <button type="button" onclick="applyScanResult()" style="flex:2;padding:10px 0;background:#d97706;color:#fff;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;">매입 거래로 추가</button>
-    </div>`);
-}
-
-function scUpdateTotal() {
-  const amt = parseInt((document.getElementById('sc_amount')?.value || '').replace(/[^0-9]/g, '')) || 0;
-  const tax = parseInt((document.getElementById('sc_tax')?.value || '').replace(/[^0-9]/g, '')) || 0;
-  const el  = document.getElementById('scTotal'); if (!el) return;
-  if (amt > 0 || tax > 0) {
-    el.style.cssText = 'background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:8px 12px;display:flex;justify-content:space-between;align-items:center;';
-    el.innerHTML = `<span style="color:#1d4ed8;font-size:12px;">합계 금액</span><span style="color:#1d4ed8;font-weight:700;font-size:15px;">${fmtW(amt + tax)}</span>`;
-  } else { el.style.cssText = ''; el.innerHTML = ''; }
-}
-
-async function applyScanResult() {
-  const clientId = Number(document.getElementById('sc_clientId')?.value);
-  const amtRaw   = (document.getElementById('sc_amount')?.value || '').replace(/[^0-9]/g, '');
-  const taxRaw   = (document.getElementById('sc_tax')?.value || '').replace(/[^0-9]/g, '');
-  const dateVal  = document.getElementById('sc_date')?.value;
-  const memo     = document.getElementById('sc_memo')?.value || '';
-  if (!clientId) { showToast('거래처를 선택하세요.'); return; }
-  if (!amtRaw)   { showToast('금액을 입력하세요.'); return; }
-  if (!dateVal)  { showToast('거래일자를 확인하세요.'); return; }
-  const tx = { date:dateVal, clientId, type:'매입', amount:parseInt(amtRaw)||0, tax:parseInt(taxRaw)||0, memo, status:TX_STATUS.UNBILLED, id:nextId(S.transactions) };
-  S.transactions = [...S.transactions, tx];
-  saveTX();
-  URL.revokeObjectURL(M.scanModal?.previewUrl);
-  M.scanModal = null;
-  S.view = 'transactions';
-  render(); showToast('매입 거래가 추가됐습니다.');
-}
-function closeScanModal() { if (M.scanModal?.previewUrl) URL.revokeObjectURL(M.scanModal.previewUrl); M.scanModal = null; renderModals(); }
 
 // ── QUICK PAY ─────────────────────────────────────────────────────────────────
 function openQuickPay(txId) {
@@ -623,7 +456,11 @@ function render() {
   const se  = document.activeElement?.selectionEnd;
 
   let content = '';
-  if      (S.view === 'dashboard')    { checkDashLock(); content = S.dashLocked ? buildDashLockScreen() : buildDashboard(); }
+  checkDashLock();
+  if (S.dashLocked) {
+    // ★ 잠금 상태에서는 어떤 탭(S.view)이든 잠금화면만 렌더링 — 데이터 빌더 함수 자체를 호출하지 않음
+    content = buildDashLockScreen();
+  } else if (S.view === 'dashboard')    content = buildDashboard();
   else if (S.view === 'clients')      content = buildClients();
   else if (S.view === 'transactions') content = buildTransactions();
   else if (S.view === 'receivables')  content = buildReceivables();
@@ -644,6 +481,7 @@ function render() {
 }
 
 function renderContent() {
+  if (S.dashLocked) { render(); return; } // 잠금 상태에서 우회 진입 시 안전하게 잠금화면으로
   const fid = document.activeElement?.id;
   const ss  = document.activeElement?.selectionStart;
   const se  = document.activeElement?.selectionEnd;
@@ -660,7 +498,6 @@ function renderModals() {
   const drawer = buildDrawer();
   if      (_pinModal)           root.innerHTML = drawer + buildPinModal();
   else if (M.confirm)           root.innerHTML = drawer + buildConfirm();
-  else if (M.scanModal)         root.innerHTML = drawer + buildScanModal();
   else if (M.syncModal)         root.innerHTML = drawer + buildSyncModal();
   else if (M.statModal)         root.innerHTML = drawer + buildStatModal();
   else if (M.resetModal)        root.innerHTML = drawer + buildResetModal();
@@ -683,7 +520,7 @@ function goToClientTx(clientId, isSales) {
   S.view          = 'transactions';
   render();
 }
-// ── DASHBOARD PIN 잠금 시스템 ─────────────────────────────────────────────────
+// ── 앱 PIN 잠금 시스템 (v7.1: 대시보드 탭 한정 → 전체 탭 잠금으로 범위 확장) ──
 const PIN_KEY      = 'crm_dash_pin_v2'; // v2: SHA-256 해시 (v1 djb2와 키 분리 → 자동 초기화)
 const PIN_TS_KEY   = 'crm_dash_pin_ts'; // 마지막 인증 시각
 const PIN_TIMEOUT  = 5 * 60 * 1000;    // 5분 비활성 시 자동 잠금
@@ -721,7 +558,7 @@ function closePinModal() { _pinModal = null; renderModals(); }
 
 function _pinTitle() {
   const m = _pinModal?.mode;
-  if (m === 'unlock') return '🔒 대시보드 잠금 해제';
+  if (m === 'unlock') return '🔒 앱 잠금 해제';
   if (m === 'set')    return '🔑 PIN 번호 설정';
   if (m === 'change') return _pinModal.step === 'input' ? '🔑 현재 PIN 입력' : '🔑 새 PIN 입력';
   if (m === 'remove') return '🔑 PIN 입력 후 삭제';
@@ -831,8 +668,8 @@ function buildPinModal() {
 function buildDashLockScreen() {
   return `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:60vh;gap:16px;padding:40px 24px;text-align:center;">
     <div style="font-size:56px;">🔒</div>
-    <div style="font-size:18px;font-weight:700;color:#0f172a;">대시보드가 잠겨 있습니다</div>
-    <div style="font-size:13px;color:#64748b;">PIN 번호를 입력하면 내용을 볼 수 있습니다</div>
+    <div style="font-size:18px;font-weight:700;color:#0f172a;">앱이 잠겨 있습니다</div>
+    <div style="font-size:13px;color:#64748b;">PIN 번호를 입력하면 모든 화면을 볼 수 있습니다</div>
     <button onclick="openPinModal('unlock')" style="margin-top:8px;padding:13px 36px;background:#b45309;color:#fff;border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;">🔑 PIN 입력</button>
   </div>`;
 }
@@ -1047,7 +884,7 @@ function onTxType(type) {
   let tx0 = null, ty0 = null, startTime = null, swiping = false;
 
   function onStart(e) {
-    if (M.clientModal||M.txModal||M.confirm||M.scanModal||M.syncModal||M.qpModal||M.batchPayModal||M.statModal||M.resetModal||M.backupModal||S.drawerOpen) return;
+    if (M.clientModal||M.txModal||M.confirm||M.syncModal||M.qpModal||M.batchPayModal||M.statModal||M.resetModal||M.backupModal||S.drawerOpen) return;
     const t = e.touches ? e.touches[0] : e;
     tx0 = t.clientX; ty0 = t.clientY; startTime = Date.now(); swiping = true;
   }
@@ -1098,12 +935,11 @@ function onTxType(type) {
 let _modalDepth = 0;
 function _pushModalHistory() { _modalDepth++; history.pushState({ modal:true, depth:_modalDepth }, ''); }
 function _hasOpenModal() {
-  return !!(M.clientModal||M.txModal||M.confirm||M.scanModal||M.syncModal||M.qpModal||M.batchPayModal||M.resetModal||M.statModal||M.backupModal);
+  return !!(M.clientModal||M.txModal||M.confirm||M.syncModal||M.qpModal||M.batchPayModal||M.resetModal||M.statModal||M.backupModal);
 }
 function _closeTopModal() {
   if (M.resetModal)    { closeResetModal(); return; }
   if (M.confirm)       { M.confirm = null; renderModals(); return; }
-  if (M.scanModal)     { closeScanModal(); return; }
   if (M.backupModal)   { closeBackupModal(); return; }
   if (M.qpModal)       { closeQuickPay(); return; }
   if (M.batchPayModal) { closeBatchPay(); return; }

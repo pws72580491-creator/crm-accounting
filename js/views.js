@@ -206,9 +206,9 @@ function buildDashboard() {
         </div>
         <div style="display:flex;align-items:center;gap:8px;">
           ${hasDashPin()
-            ? `<button onclick="openPinModal('change')" title="PIN 변경" style="background:none;border:1px solid #e2e8f0;border-radius:8px;padding:5px 10px;font-size:11px;color:#64748b;cursor:pointer;">🔑 PIN 변경</button>
-               <button onclick="openPinModal('remove')" title="PIN 해제" style="background:none;border:1px solid #e2e8f0;border-radius:8px;padding:5px 10px;font-size:11px;color:#64748b;cursor:pointer;">🔓 해제</button>`
-            : `<button onclick="openPinModal('set')" title="PIN 설정" style="background:none;border:1px solid #e2e8f0;border-radius:8px;padding:5px 10px;font-size:11px;color:#64748b;cursor:pointer;">🔒 PIN 설정</button>`
+            ? `<button onclick="openPinModal('change')" title="앱 잠금 PIN 변경" style="background:none;border:1px solid #e2e8f0;border-radius:8px;padding:5px 10px;font-size:11px;color:#64748b;cursor:pointer;">🔑 PIN 변경</button>
+               <button onclick="openPinModal('remove')" title="앱 잠금 해제(PIN 삭제)" style="background:none;border:1px solid #e2e8f0;border-radius:8px;padding:5px 10px;font-size:11px;color:#64748b;cursor:pointer;">🔓 해제</button>`
+            : `<button onclick="openPinModal('set')" title="앱 전체를 PIN으로 잠금" style="background:none;border:1px solid #e2e8f0;border-radius:8px;padding:5px 10px;font-size:11px;color:#64748b;cursor:pointer;">🔒 PIN 설정</button>`
           }
           ${monthNav}
         </div>
@@ -670,7 +670,6 @@ function buildTransactions() {
       <p style="color:#64748b;font-size:12px;margin-top:2px;">${periodLabel} · ${filtered.length}건</p></div>
       <div style="display:flex;gap:6px;">
         <button onclick="openTxModal('add')" style="display:flex;align-items:center;gap:5px;background:#d97706;color:#fff;border:none;border-radius:8px;padding:8px 12px;font-size:13px;font-weight:700;cursor:pointer;">${I.plus} 추가</button>
-        <button onclick="openScanInput()" style="display:flex;align-items:center;gap:5px;background:#1d4ed8;color:#fff;border:none;border-radius:8px;padding:8px 12px;font-size:13px;font-weight:600;cursor:pointer;">${I.camera} 스캔</button>
       </div>
     </div>
     <div style="display:flex;gap:4px;background:#f1f5f9;border-radius:10px;padding:3px;">${modeTabs}</div>

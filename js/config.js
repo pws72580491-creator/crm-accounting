@@ -1,5 +1,5 @@
 // ── Version ───────────────────────────────────────────────────────────────────
-const APP_VERSION = 'v7.0-final';
+const APP_VERSION = 'v7.4';
 
 // ── Sample Data ───────────────────────────────────────────────────────────────
 const SAMPLE_CLIENTS = [
@@ -46,12 +46,6 @@ const NAPUM_FB_CFG = {
   messagingSenderId: "96408145171",
   appId:             "1:96408145171:web:30a300ff2f7b735d929ee6",
 };
-
-// ── OpenRouter API Key (AI 영수증 분석) ───────────────────────────────────────
-// ⚠️  보안 주의: 이 키는 클라이언트에 노출됩니다.
-//   - OpenRouter 대시보드에서 도메인 제한 및 월 사용량 상한을 반드시 설정하세요.
-//   - https://openrouter.ai/settings/keys
-const OPENROUTER_API_KEY = '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';
 
 // ── Nav Items ─────────────────────────────────────────────────────────────────
 const NAV = [

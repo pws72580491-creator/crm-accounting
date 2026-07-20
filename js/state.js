@@ -17,7 +17,7 @@ let S = {
 
 let M = {
   clientModal: null, txModal: null, confirm: null,
-  scanModal: null, syncModal: null,
+  syncModal: null,
   qpModal: null, batchPayModal: null,
   statModal: null, resetModal: null, backupModal: null,
 };
@@ -362,27 +362,6 @@ function toggleStatus(txId) {
   _afterNapumPatch(updatedTx);
 }
 
-/** 상태 직접 지정 */
-function completeStatus(txId, status) {
-  let updatedTx = null;
-  S.transactions = S.transactions.map(t => {
-    if (t.id !== txId) return t;
-    const isFull = isTxComplete(status);
-    const u = { ...t, status };
-    if (isFull && !u.paidAmount) {
-      u.paidAmount = t.amount + t.tax;
-      u.paidAt     = new Date().toISOString();
-      u.paidMethod = u.paidMethod || 'cash';
-    }
-    delete u.dlControlled;
-    updatedTx = u; return u;
-  });
-  if (updatedTx) _saveOneTx(updatedTx); else saveTX();
-  lsSet('crm_tx', S.transactions);
-  render();
-  _afterNapumPatch(updatedTx);
-}
-
 /** 납품 역방향 패치 공통 헬퍼 */
 function _afterNapumPatch(tx, delayMs = 0) {
   if (!tx || !tx._napumId) return;
@@ -481,7 +460,6 @@ async function loadData() {
   const _syncedMigKey = 'crm_napum_void_migrated_v2';
   if (!lsGet(_syncedMigKey, false)) {
     lsSet('crm_napum_synced', []);
-    lsSet('crm_napum_void_migrated_v1', true);
     lsSet(_syncedMigKey, true);
     console.info('[마이그레이션2] 타인거래 거래처 자동생성 포함 재동기화');
   }

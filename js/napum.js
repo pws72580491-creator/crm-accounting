@@ -67,6 +67,7 @@ function _buildNapumPatch(crmTx) {
 
 // ── 납품 앱 실시간 리스너 ────────────────────────────────────────────────────
 const _napumListeners = {}; // wsId → { clientsRef, clientsCb, sharedClientsRef, sharedClientsCb, ordersRef, ordersCb }
+const _napumProcessToken = {}; // wsId → 현재 처리 중인 스냅샷의 토큰 번호 (새 스냅샷 도착 시 이전 처리 중단용)
 
 async function attachNapumListeners() {
   const workspaces = _getWorkspaces();
@@ -186,9 +187,13 @@ function detachNapumListeners() {
 
 /**
  * 납품 앱 orders 스냅샷을 받아 CRM에 반영
- * Map 기반 처리 — O(n²) 배열 재생성 없음
+ * Map 기반 처리 + 청크 분할(200건 단위)로 대량 주문도 UI 블로킹 없이 처리
+ * ★ v7.4: 짧은 시간에 여러 스냅샷이 연달아 도착하면(napum에서 잦은 쓰기) 이전 처리는
+ *   토큰 비교로 안전하게 중단하고 최신 스냅샷 처리만 완주한다 (중복 작업 방지).
  */
-function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = []) {
+async function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = []) {
+  const myToken = (_napumProcessToken[ws.id] = (_napumProcessToken[ws.id] || 0) + 1);
+
   const isSelfWs   = _getWorkspaces().some(w => w.id === ws.id);
   const useFilter  = !isSelfWs;
   const allowedSet = new Set(allowed);
@@ -271,53 +276,64 @@ function _processNapumOrdersSnapshot(ws, ordersObj, napumClientsObj, allowed = [
   });
 
   // ── 3단계: 거래 처리 — Map 직접 수정 (배열 재생성 없음) ──────────────────
-  orders.forEach(o => {
-    if (!o.date || !o.total) return;
-    const nc          = napumClientById[String(o.clientId)];
-    const crmName     = o.clientName || nc?.name || '';
-    const crmClientId = nameToId[crmName];
-    if (!crmClientId) return;
-
-    const memoItems = (o.items || []).map(i => i.name + (i.qty > 1 ? ' ×' + i.qty : '')).join(', ');
-    const memo      = '[' + ws.label + ']' + (o.isVoid ? ' [타인]' : '') + ' ' + (o.note || memoItems || '납품');
-    const amount    = Number(o.total) || 0;
-    const status    = o.isPaid ? TX_STATUS.PAID : TX_STATUS.UNPAID;
-    const napumKey  = ws.id + ':' + o.id;
-
-    if (napumIdToCrmId[napumKey]) {
-      const prev = txMap.get(napumIdToCrmId[napumKey]);
-      if (!prev) return;
-      // ★ CRM이 결제 처리한 거래(crmControlled)는 status·결제 필드를 납품 앱 스냅샷이 덮어쓰지 않음
-      //   (amount·memo·items는 납품 앱 원본 기준으로 계속 업데이트)
-      const next = prev.crmControlled
-        ? { ...prev, amount, tax: 0, memo }  // 결제 필드 보존
-        : { ...prev, status, amount, tax: 0, memo }; // 기존 동작
-      if (o.items && o.items.length)  next.items            = o.items;            else delete next.items;
-      if (!prev.crmControlled) {
-        if (o.paidAmount)               next.paidAmount       = o.paidAmount;       else delete next.paidAmount;
-        if (o.paidAt)                   next.paidAt           = o.paidAt;           else delete next.paidAt;
-        if (o.paidMethod)               next.paidMethod       = o.paidMethod;       else delete next.paidMethod;
-        if (o.paidMethodDetail)         next.paidMethodDetail = o.paidMethodDetail; else delete next.paidMethodDetail;
-      }
-      if (JSON.stringify(next) !== JSON.stringify(prev)) {
-        txMap.set(next.id, next); changed = true; changedTxIds.add(next.id);
-      }
-    } else {
-      const newT = {
-        id: nextId([...txMap.values()]), date: o.date, clientId: crmClientId,
-        type: '매출', amount, tax: 0, memo, status, _napumId: napumKey,
-      };
-      if (o.items && o.items.length)  newT.items            = o.items;
-      if (o.paidAmount)               newT.paidAmount       = o.paidAmount;
-      if (o.paidAt)                   newT.paidAt           = o.paidAt;
-      if (o.paidMethod)               newT.paidMethod       = o.paidMethod;
-      if (o.paidMethodDetail)         newT.paidMethodDetail = o.paidMethodDetail;
-      txMap.set(newT.id, newT);
-      napumIdToCrmId[napumKey] = newT.id;
-      synced.add(napumKey); changed = true;
-      changedTxIds.add(newT.id);
+  //   대량 주문(수백~수천 건)을 한 번에 동기 처리하면 화면이 멈추므로 청크로 분할
+  const _ORDER_CHUNK = 200;
+  for (let _ci = 0; _ci < orders.length; _ci += _ORDER_CHUNK) {
+    if (_napumProcessToken[ws.id] !== myToken) {
+      console.info('[납품싱크] 새 스냅샷 도착으로 이전 처리 중단:', ws.label, `(${_ci}/${orders.length}건까지 처리)`);
+      return; // 최신 스냅샷을 처리하는 다음 호출이 전체를 다시 처리하므로 데이터 유실 없음
     }
-  });
+    const chunk = orders.slice(_ci, _ci + _ORDER_CHUNK);
+    chunk.forEach(o => {
+      if (!o.date || !o.total) return;
+      const nc          = napumClientById[String(o.clientId)];
+      const crmName     = o.clientName || nc?.name || '';
+      const crmClientId = nameToId[crmName];
+      if (!crmClientId) return;
+
+      const memoItems = (o.items || []).map(i => i.name + (i.qty > 1 ? ' ×' + i.qty : '')).join(', ');
+      const memo      = '[' + ws.label + ']' + (o.isVoid ? ' [타인]' : '') + ' ' + (o.note || memoItems || '납품');
+      const amount    = Number(o.total) || 0;
+      const status    = o.isPaid ? TX_STATUS.PAID : TX_STATUS.UNPAID;
+      const napumKey  = ws.id + ':' + o.id;
+
+      if (napumIdToCrmId[napumKey]) {
+        const prev = txMap.get(napumIdToCrmId[napumKey]);
+        if (!prev) return;
+        // ★ CRM이 결제 처리한 거래(crmControlled)는 status·결제 필드를 납품 앱 스냅샷이 덮어쓰지 않음
+        //   (amount·memo·items는 납품 앱 원본 기준으로 계속 업데이트)
+        const next = prev.crmControlled
+          ? { ...prev, amount, tax: 0, memo }  // 결제 필드 보존
+          : { ...prev, status, amount, tax: 0, memo }; // 기존 동작
+        if (o.items && o.items.length)  next.items            = o.items;            else delete next.items;
+        if (!prev.crmControlled) {
+          if (o.paidAmount)               next.paidAmount       = o.paidAmount;       else delete next.paidAmount;
+          if (o.paidAt)                   next.paidAt           = o.paidAt;           else delete next.paidAt;
+          if (o.paidMethod)               next.paidMethod       = o.paidMethod;       else delete next.paidMethod;
+          if (o.paidMethodDetail)         next.paidMethodDetail = o.paidMethodDetail; else delete next.paidMethodDetail;
+        }
+        if (JSON.stringify(next) !== JSON.stringify(prev)) {
+          txMap.set(next.id, next); changed = true; changedTxIds.add(next.id);
+        }
+      } else {
+        const newT = {
+          id: nextId([...txMap.values()]), date: o.date, clientId: crmClientId,
+          type: '매출', amount, tax: 0, memo, status, _napumId: napumKey,
+        };
+        if (o.items && o.items.length)  newT.items            = o.items;
+        if (o.paidAmount)               newT.paidAmount       = o.paidAmount;
+        if (o.paidAt)                   newT.paidAt           = o.paidAt;
+        if (o.paidMethod)               newT.paidMethod       = o.paidMethod;
+        if (o.paidMethodDetail)         newT.paidMethodDetail = o.paidMethodDetail;
+        txMap.set(newT.id, newT);
+        napumIdToCrmId[napumKey] = newT.id;
+        synced.add(napumKey); changed = true;
+        changedTxIds.add(newT.id);
+      }
+    });
+    if (_ci + _ORDER_CHUNK < orders.length) await new Promise(r => setTimeout(r, 0)); // UI 숨 쉴 틈
+  }
+  if (_napumProcessToken[ws.id] !== myToken) return; // 마지막 청크 이후에도 최신 여부 재확인
 
   console.info('[납품싱크] 처리 결과:', ws.label,
     '| changed:', changed,
