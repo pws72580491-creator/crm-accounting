@@ -39,6 +39,12 @@ function sidebarInner(onClose = '') {
         </button>
         <div style="display:none;margin-top:6px;max-height:220px;overflow-y:auto;font-size:10px;color:#94a3b8;line-height:1.6;">
           <div style="margin-bottom:8px;">
+            <span style="color:#34d399;font-weight:700;">v7.7</span>
+            <ul style="margin:3px 0 0 12px;padding:0;list-style:disc;">
+              <li>🐛 거래 수정창을 열어둔 채로 백그라운드에서 납품 동기화가 일어나면 화면에 상태가 갱신 안 되던 버그 수정 (모달이 열 당시 스냅샷을 계속 들고 있던 문제 — 매 render()마다 최신 데이터로 교체)</li>
+            </ul>
+          </div>
+          <div style="margin-bottom:8px;">
             <span style="color:#34d399;font-weight:700;">v7.6</span>
             <ul style="margin:3px 0 0 12px;padding:0;list-style:disc;">
               <li>🐛 납품 명세서(🔍) 모달이 거래내역과 다른 결제상태(완납/미수 불일치)를 보여주던 문제 수정 — 명세서는 매번 납품 앱에서 새로 fetch한 스냅샷을 그대로 쓰다 보니 실시간 동기화된 CRM 상태와 어긋날 수 있었음. 이제 CRM에 이미 연동된 거래는 CRM측 결제상태를 우선 적용</li>
@@ -468,6 +474,17 @@ function render() {
   const fid = document.activeElement?.id;
   const ss  = document.activeElement?.selectionStart;
   const se  = document.activeElement?.selectionEnd;
+
+  // ★ 열려있는 수정 모달은 열 당시 스냅샷을 들고 있어 백그라운드 동기화(납품 연동 등)로
+  //   S.transactions/S.clients가 바뀌어도 반영이 안 됨 — 매 render()마다 최신 데이터로 교체
+  if (M.txModal && typeof M.txModal === 'object') {
+    const freshTx = S.transactions.find(t => t.id === M.txModal.id);
+    if (freshTx) M.txModal = freshTx;
+  }
+  if (M.clientModal && typeof M.clientModal === 'object') {
+    const freshC = S.clients.find(c => c.id === M.clientModal.id);
+    if (freshC) M.clientModal = freshC;
+  }
 
   let content = '';
   checkDashLock();
