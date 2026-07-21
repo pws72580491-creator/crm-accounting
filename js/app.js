@@ -39,6 +39,12 @@ function sidebarInner(onClose = '') {
         </button>
         <div style="display:none;margin-top:6px;max-height:220px;overflow-y:auto;font-size:10px;color:#94a3b8;line-height:1.6;">
           <div style="margin-bottom:8px;">
+            <span style="color:#34d399;font-weight:700;">v7.6</span>
+            <ul style="margin:3px 0 0 12px;padding:0;list-style:disc;">
+              <li>🐛 납품 명세서(🔍) 모달이 거래내역과 다른 결제상태(완납/미수 불일치)를 보여주던 문제 수정 — 명세서는 매번 납품 앱에서 새로 fetch한 스냅샷을 그대로 쓰다 보니 실시간 동기화된 CRM 상태와 어긋날 수 있었음. 이제 CRM에 이미 연동된 거래는 CRM측 결제상태를 우선 적용</li>
+            </ul>
+          </div>
+          <div style="margin-bottom:8px;">
             <span style="color:#34d399;font-weight:700;">v7.5</span>
             <ul style="margin:3px 0 0 12px;padding:0;list-style:disc;">
               <li>🐛 납품 관리에서 완납 처리해도 CRM에는 미수금으로 계속 남던 버그 수정 — 이미 연동된(_napumId) 거래는 거래처명 재매칭 없이 항상 상태가 갱신되도록 처리 순서 변경 (거래처명 표기 차이가 있으면 연동된 거래조차 업데이트가 통째로 스킵되던 구조적 결함)</li>

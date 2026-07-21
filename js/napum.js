@@ -768,6 +768,23 @@ async function _loadStatOrders() {
       } catch (e) { /* 워크스페이스 오류 무시 */ }
     }));
 
+    // ★ 결제 상태는 납품 원본 fetch 대신 CRM에 이미 동기화된 거래(S.transactions) 기준으로 덮어쓴다.
+    //   이 fetch는 이 모달을 열 때마다 워크스페이스를 다시 순회해 가져오는 스냅샷이라,
+    //   실시간 리스너가 이미 갱신 처리한 최신 상태와 일시적으로 어긋날 수 있다.
+    //   (명세서 화면이 "완납"인데 거래내역은 "미수금"으로 나오는 불일치의 원인)
+    //   CRM 쪽 상태가 실시간 동기화로 검증된 값이므로 그것을 우선한다.
+    const linkedTxByNapumKey = new Map();
+    S.transactions.forEach(t => { if (t._napumId) linkedTxByNapumKey.set(t._napumId, t); });
+    allOrders.forEach(o => {
+      const linkedTx = linkedTxByNapumKey.get(o._wsId + ':' + o.id);
+      if (!linkedTx) return; // 아직 CRM에 동기화 안 된 신규 주문은 납품 원본 값 그대로 사용
+      o.isPaid = linkedTx.status === TX_STATUS.PAID || linkedTx.status === TX_STATUS.BILLED;
+      if (linkedTx.paidAmount !== undefined) o.paidAmount = linkedTx.paidAmount; else delete o.paidAmount;
+      if (linkedTx.paidAt !== undefined)     o.paidAt     = linkedTx.paidAt;     else delete o.paidAt;
+      if (linkedTx.paidMethod !== undefined) o.paidMethod = linkedTx.paidMethod; else delete o.paidMethod;
+      if (linkedTx.paidMethodDetail !== undefined) o.paidMethodDetail = linkedTx.paidMethodDetail; else delete o.paidMethodDetail;
+    });
+
     allOrders.sort((a, b) => a.date.localeCompare(b.date));
     if (M.statModal) M.statModal = { ...M.statModal, step: 'done', orders: allOrders, error: null };
     renderModals();
