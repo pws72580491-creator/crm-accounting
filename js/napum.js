@@ -768,22 +768,20 @@ async function _loadStatOrders() {
       } catch (e) { /* 워크스페이스 오류 무시 */ }
     }));
 
-    // ★ 결제 상태는 납품 원본 fetch 대신 CRM에 이미 동기화된 거래(S.transactions) 기준으로 덮어쓴다.
-    //   이 fetch는 이 모달을 열 때마다 워크스페이스를 다시 순회해 가져오는 스냅샷이라,
-    //   실시간 리스너가 이미 갱신 처리한 최신 상태와 일시적으로 어긋날 수 있다.
-    //   (명세서 화면이 "완납"인데 거래내역은 "미수금"으로 나오는 불일치의 원인)
-    //   CRM 쪽 상태가 실시간 동기화로 검증된 값이므로 그것을 우선한다.
-    const linkedTxByNapumKey = new Map();
-    S.transactions.forEach(t => { if (t._napumId) linkedTxByNapumKey.set(t._napumId, t); });
+    // ★ v7.8: 이 fetch가 납품 앱의 "지금" 상태(source of truth)다. 화면은 항상 이 값 그대로 보여준다.
+    //   (v7.6에서는 반대로 CRM에 저장된 값으로 이 fetch 결과를 덮어썼는데, 그러면 납품 앱에서
+    //    방금 결제를 취소/정정해도 CRM이 그 변경을 아직 못 받았을 때 화면이 계속 예전 상태를
+    //    보여주는 문제가 있었다 — 지금 겪고 계신 "미수로 되돌렸는데 계속 완납으로 보임" 현상이 그것)
+    //   대신, fetch 결과가 CRM에 저장된 값과 다르면 그 자리에서 CRM 쪽을 정정(read-repair)해서
+    //   거래내역 목록도 같이 최신 상태로 맞춘다.
+    let repairedCount = 0;
     allOrders.forEach(o => {
-      const linkedTx = linkedTxByNapumKey.get(o._wsId + ':' + o.id);
-      if (!linkedTx) return; // 아직 CRM에 동기화 안 된 신규 주문은 납품 원본 값 그대로 사용
-      o.isPaid = linkedTx.status === TX_STATUS.PAID || linkedTx.status === TX_STATUS.BILLED;
-      if (linkedTx.paidAmount !== undefined) o.paidAmount = linkedTx.paidAmount; else delete o.paidAmount;
-      if (linkedTx.paidAt !== undefined)     o.paidAt     = linkedTx.paidAt;     else delete o.paidAt;
-      if (linkedTx.paidMethod !== undefined) o.paidMethod = linkedTx.paidMethod; else delete o.paidMethod;
-      if (linkedTx.paidMethodDetail !== undefined) o.paidMethodDetail = linkedTx.paidMethodDetail; else delete o.paidMethodDetail;
+      if (_repairTxFromNapumOrder(o, o._wsId, o._wsLabel)) repairedCount++;
     });
+    if (repairedCount > 0) {
+      console.info('[명세서] 납품 원본과 어긋난 거래', repairedCount, '건 자동 정정');
+      render(); // 거래내역 목록 등 다른 화면에도 정정된 상태 반영
+    }
 
     allOrders.sort((a, b) => a.date.localeCompare(b.date));
     if (M.statModal) M.statModal = { ...M.statModal, step: 'done', orders: allOrders, error: null };
@@ -792,6 +790,39 @@ async function _loadStatOrders() {
     if (M.statModal) M.statModal = { ...M.statModal, step: 'error', error: err.message };
     renderModals();
   }
+}
+
+/**
+ * 납품 원본 주문(o) 기준으로 CRM에 이미 연동된 거래를 정정한다 (read-repair).
+ * 상태가 실제로 달라졌을 때만 갱신하고, true/false로 변경 여부를 반환한다.
+ * crmControlled(CRM이 결제 처리해 우선권을 가진 거래)는 건드리지 않는다.
+ */
+function _repairTxFromNapumOrder(o, wsId, wsLabel) {
+  if (!o.date || !o.total) return false;
+  const napumKey = wsId + ':' + o.id;
+  const idx = S.transactions.findIndex(t => t._napumId === napumKey);
+  if (idx === -1) return false;
+  const prev = S.transactions[idx];
+  if (prev.crmControlled) return false;
+
+  const memoItems = (o.items || []).map(i => i.name + (i.qty > 1 ? ' ×' + i.qty : '')).join(', ');
+  const memo      = '[' + wsLabel + ']' + (o.isVoid ? ' [타인]' : '') + ' ' + (o.note || memoItems || '납품');
+  const status    = o.isPaid ? TX_STATUS.PAID : TX_STATUS.UNPAID;
+  const amount    = Number(o.total) || 0;
+
+  const next = { ...prev, status, amount, tax: 0, memo };
+  if (o.items && o.items.length)  next.items            = o.items;            else delete next.items;
+  if (o.paidAmount)               next.paidAmount       = o.paidAmount;       else delete next.paidAmount;
+  if (o.paidAt)                   next.paidAt           = o.paidAt;           else delete next.paidAt;
+  if (o.paidMethod)               next.paidMethod       = o.paidMethod;       else delete next.paidMethod;
+  if (o.paidMethodDetail)         next.paidMethodDetail = o.paidMethodDetail; else delete next.paidMethodDetail;
+
+  if (JSON.stringify(next) === JSON.stringify(prev)) return false;
+
+  S.transactions = S.transactions.map(t => t.id === next.id ? next : t);
+  lsSet('crm_tx', S.transactions);
+  _saveOneTx(next); // fire-and-forget, Firebase 반영
+  return true;
 }
 
 // ── 납품 명세표 공유 ──────────────────────────────────────────────────────────

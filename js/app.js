@@ -39,6 +39,12 @@ function sidebarInner(onClose = '') {
         </button>
         <div style="display:none;margin-top:6px;max-height:220px;overflow-y:auto;font-size:10px;color:#94a3b8;line-height:1.6;">
           <div style="margin-bottom:8px;">
+            <span style="color:#34d399;font-weight:700;">v7.8</span>
+            <ul style="margin:3px 0 0 12px;padding:0;list-style:disc;">
+              <li>🐛 v7.6 방향 오류 정정 — 명세서가 CRM 저장값으로 납품 원본을 덮어써서, 납품 앱에서 결제를 취소/정정해도 CRM이 계속 예전(완납) 상태를 보여주는 문제가 있었음. 이제 명세서는 항상 납품 원본을 그대로 보여주고, 대신 CRM 쪽 저장 데이터가 다르면 자동으로 정정(read-repair)해서 거래내역 목록도 같이 맞춘다</li>
+            </ul>
+          </div>
+          <div style="margin-bottom:8px;">
             <span style="color:#34d399;font-weight:700;">v7.7</span>
             <ul style="margin:3px 0 0 12px;padding:0;list-style:disc;">
               <li>🐛 거래 수정창을 열어둔 채로 백그라운드에서 납품 동기화가 일어나면 화면에 상태가 갱신 안 되던 버그 수정 (모달이 열 당시 스냅샷을 계속 들고 있던 문제 — 매 render()마다 최신 데이터로 교체)</li>
